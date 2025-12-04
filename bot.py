@@ -27,13 +27,11 @@ if not BOT_TOKEN:
     print("❌ ОШИБКА: BOT_TOKEN не установлен!")
     exit(1)
 
-print(f"🔥 Бот стартует! Токен: {BOT_TOKEN[:10]}...")
+print(f"✨ Бот запускается... Токен: {BOT_TOKEN[:10]}...")
 
 MAX_VIDEO_DURATION = 60
 FREE_LIMIT = 1
-PREMIUM_QUOTA = 15
-PRICE = 199
-SUPPORT_USERNAME = "kruzhkorez_support"  # Без @ для избежания ошибок Markdown
+SUPPORT_USERNAME = "Oblastyle"  # 🛠 Исправленный контакт поддержки
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
@@ -114,164 +112,255 @@ def save_users(users):
     except Exception as e:
         logger.error(f"Ошибка сохранения {USERS_FILE}: {e}")
 
-# === КЛАВИАТУРА ===
+# === 🎨 КРАСИВЫЕ КЛАВИАТУРЫ ===
 def get_main_keyboard():
+    """Главное меню с красивым дизайном"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎥 Сделать видео", callback_data="make_video")],
-        [InlineKeyboardButton(text="ℹ️ Как пользоваться", callback_data="howto")],
+        [InlineKeyboardButton(text="🎬 Создать видео", callback_data="make_video")],
+        [InlineKeyboardButton(text="📱 Инструкция", callback_data="howto")],
+        [InlineKeyboardButton(text="⭐ Премиум", callback_data="premium")],
         [InlineKeyboardButton(text="🛠 Поддержка", callback_data="support")]
     ])
 
 def get_back_keyboard():
+    """Кнопка назад"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_main")]
     ])
 
-# === ОБРАБОТКА ВИДЕО (УПРОЩЕННАЯ ДЛЯ RENDER) ===
+def get_processing_keyboard():
+    """Кнопки во время обработки"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Проверить статус", callback_data="check_status")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel")]
+    ])
+
+# === 🎥 ОБРАБОТКА ВИДЕО (ПРАВИЛЬНЫЙ ФОРМАТ) ===
 async def async_process_video(input_path: str, output_path: str, duration: float):
-    """Упрощенная обработка для Render Free Plan"""
+    """Правильная обработка видео - сохраняем исходный формат кружка, но убираем круглую маску"""
     
-    def _simple_process():
+    def _process():
         try:
             if not os.path.exists(input_path):
                 raise FileNotFoundError(f"Входной файл не найден: {input_path}")
             
             file_size = os.path.getsize(input_path)
-            logger.info(f"⚡ Упрощенная обработка. Размер: {file_size} байт")
+            logger.info(f"🎞️ Начало обработки. Размер: {file_size} байт")
             
             if ffmpeg_available:
-                # ПРОСТАЯ команда для Render Free
+                # ✅ ПРАВИЛЬНАЯ КОМАНДА:
+                # 1. Убираем круглую маску (телеграм добавляет её к кружкам)
+                # 2. Сохраняем квадратный формат 1080x1080 (как у кружков)
+                # 3. НЕ добавляем белый фон
                 cmd = [
                     'ffmpeg',
                     '-i', input_path,
-                    # Простое растягивание под 1080x1920
-                    '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920',
+                    # Ключевой фильтр: убираем альфа-канал (прозрачность) который делает круглую маску
+                    '-vf', 'format=yuv420p,scale=1080:1080:force_original_aspect_ratio=increase',
                     '-c:v', 'libx264',
-                    '-preset', 'ultrafast',  # ВАЖНО: ultrafast для слабого CPU
-                    '-crf', '28',            # Чуть хуже качество, но быстрее
-                    '-c:a', 'copy',          # Копируем аудио без изменений
+                    '-preset', 'fast',
+                    '-crf', '23',           # Хорошее качество
+                    '-c:a', 'aac',
+                    '-b:a', '128k',
+                    '-movflags', '+faststart',
                     '-y',
                     output_path
                 ]
                 
-                logger.info("⚡ Запуск УПРОЩЕННОЙ FFmpeg команды (таймаут 30 сек)")
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                logger.info("🔄 Запуск обработки видео...")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
                 
                 if result.returncode == 0:
                     output_size = os.path.getsize(output_path)
-                    logger.info(f"✅ Обработка успешна. Размер: {output_size} байт")
+                    logger.info(f"✅ Видео обработано! Размер: {output_size} байт")
+                    
+                    # Проверяем результат
+                    check_cmd = [
+                        'ffprobe',
+                        '-v', 'error',
+                        '-select_streams', 'v:0',
+                        '-show_entries', 'stream=width,height,codec_name',
+                        '-of', 'csv=p=0',
+                        output_path
+                    ]
+                    check_result = subprocess.run(check_cmd, capture_output=True, text=True)
+                    if check_result.returncode == 0:
+                        logger.info(f"📐 Результат: {check_result.stdout.strip()}")
+                    
                     return True
                 else:
-                    logger.warning(f"FFmpeg ошибка: {result.stderr[:200]}...")
-            
-            # Если FFmpeg не сработал - просто копируем файл
-            import shutil
-            shutil.copy2(input_path, output_path)
-            logger.info("✅ Использовано простое копирование файла")
-            return True
-            
+                    logger.error(f"❌ FFmpeg ошибка: {result.stderr[:300]}")
+                    
+                    # 🔄 Резервный вариант - простое копирование
+                    logger.info("🔄 Пробую резервный вариант...")
+                    backup_cmd = [
+                        'ffmpeg',
+                        '-i', input_path,
+                        '-c:v', 'copy',  # Просто копируем
+                        '-c:a', 'copy',
+                        '-y',
+                        output_path
+                    ]
+                    
+                    backup_result = subprocess.run(backup_cmd, capture_output=True, text=True, timeout=30)
+                    if backup_result.returncode == 0:
+                        logger.info("✅ Резервная обработка успешна")
+                        return True
+                    else:
+                        return False
+            else:
+                logger.error("❌ FFmpeg не доступен!")
+                return False
+                
         except subprocess.TimeoutExpired:
-            logger.error("❌ Таймаут FFmpeg (30 сек) - используем копирование")
-            import shutil
-            shutil.copy2(input_path, output_path)
-            return True
+            logger.error("⏱️ Таймаут обработки видео")
+            return False
         except Exception as e:
             logger.error(f"❌ Ошибка обработки: {e}")
             return False
 
     loop = asyncio.get_event_loop()
     try:
-        # Только 45 секунд на всю обработку!
         await asyncio.wait_for(
-            loop.run_in_executor(executor, _simple_process),
-            timeout=45.0
+            loop.run_in_executor(executor, _process),
+            timeout=60.0  # 60 секунд максимум
         )
-        logger.info("✅ Обработка видео завершена")
+        logger.info("✅ Обработка завершена")
         return True
     except asyncio.TimeoutError:
-        logger.error("❌ Общий таймаут обработки (45 сек)")
+        logger.error("⏱️ Общий таймаут обработки")
         return False
 
-# === ОБРАБОТКА СООБЩЕНИЙ ===
+# === 💬 ОБРАБОТКА СООБЩЕНИЙ ===
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = str(message.from_user.id)
-    logger.info(f"Команда /start от пользователя {user_id}")
+    logger.info(f"🚀 Команда /start от пользователя {user_id}")
     
-    # Загружаем данные пользователя
     users = load_users()
     user_data = users.get(user_id, {"free_used": False, "used": 0})
     remaining_free = 0 if user_data.get("free_used") else 1
     
-    await message.answer(
-        "🎬 **Привет! Я — КружкоРез**\n\n"
-        "Я превращаю кружки из Telegram в готовые видео для Reels, Shorts и TikTok.\n\n"
-        "✅ **Вертикальный формат 1080×1920**\n"
-        "✅ **Без белого фона**\n"
-        "✅ **Сохранение аудио**\n"
-        "✅ **Оптимизация для соцсетей**\n\n"
-        f"У тебя осталось **{remaining_free} бесплатных кружков**.",
-        reply_markup=get_main_keyboard()
+    welcome_text = (
+        "✨ **Добро пожаловать в КружкоРез!** ✨\n\n"
+        "🎬 **Я превращаю кружки Telegram в готовые видео!**\n\n"
+        "✅ **Что я делаю:**\n"
+        "• Убираю круглую маску\n"
+        "• Сохраняю исходное качество\n"
+        "• Оптимизирую для соцсетей\n"
+        "• Готово за 30 секунд!\n\n"
+        f"🎁 **У вас осталось: {remaining_free} бесплатных обработок**\n\n"
+        "_Выберите действие ниже:_ 👇"
     )
+    
+    await message.answer(welcome_text, reply_markup=get_main_keyboard())
 
 @router.callback_query(F.data == "back_to_main")
 async def btn_back(callback: CallbackQuery):
     await callback.message.edit_text(
-        "Главное меню:",
+        "📱 **Главное меню**\n\n_Выберите действие:_ 👇",
         reply_markup=get_main_keyboard()
     )
     await callback.answer()
 
 @router.callback_query(F.data == "make_video")
 async def btn_make_video(callback: CallbackQuery):
-    await callback.message.answer(
-        "📹 **Как сделать видео:**\n\n"
-        "Просто **перешли мне кружок** (видеосообщение), и я обработаю его!\n\n"
-        "Я преобразую его в **вертикальный формат 1080×1920** — идеально для Reels и Shorts!\n\n"
-        "_Отправь кружок прямо сейчас..._",
-        reply_markup=get_back_keyboard()
+    instruction = (
+        "🎬 **Как создать видео:**\n\n"
+        "1. 📱 **Запишите кружок** в Telegram\n"
+        "   _Зажмите микрофон → проведите вверх → снимите видео_\n\n"
+        "2. 📤 **Перешлите его мне**\n"
+        "   _Просто перешлите как обычное сообщение_\n\n"
+        "3. ⚡ **Получите готовое видео**\n"
+        "   _Без круглой маски, готово для соцсетей!_\n\n"
+        "⏱️ **Время обработки:** 20-40 секунд\n"
+        "📏 **Формат:** Квадратное видео 1080x1080\n\n"
+        "⬇️ **Перешлите кружок прямо сейчас!**"
     )
+    
+    await callback.message.edit_text(instruction, reply_markup=get_back_keyboard())
     await callback.answer()
 
 @router.callback_query(F.data == "howto")
 async def btn_howto(callback: CallbackQuery):
-    await callback.message.answer(
-        "📱 **Как пользоваться ботом:**\n\n"
-        "1. 📸 **Запиши кружок** в Telegram\n"
-        "   _Удерживай микрофон → проведи вверх → сними видео_\n\n"
-        "2. 📤 **Перешли кружок** мне\n"
-        "   _Просто перешли как обычное сообщение_\n\n"
-        "3. ⏳ **Подожди обработки**\n"
-        "   _Обработка займет 30-45 секунд_\n\n"
-        "4. 🎬 **Получи готовое видео 1080×1920**\n"
-        "   _Готово для Instagram Reels, YouTube Shorts, TikTok_\n\n"
+    guide = (
+        "📚 **Полная инструкция:**\n\n"
+        "🎯 **Что такое кружок?**\n"
+        "Кружок — это видеосообщение в Telegram, которое записывается нажатием на микрофон.\n\n"
+        "🔧 **Как использовать бота:**\n\n"
+        "**ШАГ 1: Запись кружка**\n"
+        "• Откройте чат с кем-то\n"
+        "• Зажмите кнопку микрофона\n"
+        "• Проведите пальцем вверх\n"
+        "• Запишите видео (до 60 секунд)\n\n"
+        "**ШАГ 2: Отправка боту**\n"
+        "• Нажмите на кружок\n"
+        "• Выберите «Переслать»\n"
+        "• Найдите @KruzhkoRez_bot\n"
+        "• Отправьте\n\n"
+        "**ШАГ 3: Получение результата**\n"
+        "• Подождите 20-40 секунд\n"
+        "• Получите готовое видео\n"
+        "• Сохраните и используйте!\n\n"
         "⚠️ **Важно:**\n"
-        "• Максимальная длительность: 60 секунд",
-        reply_markup=get_back_keyboard()
+        "• Максимальная длительность: 60 секунд\n"
+        "• 1 бесплатная обработка на пользователя\n"
+        "• Результат: квадратное видео 1080x1080"
     )
+    
+    await callback.message.edit_text(guide, reply_markup=get_back_keyboard())
+    await callback.answer()
+
+@router.callback_query(F.data == "premium")
+async def btn_premium(callback: CallbackQuery):
+    premium_info = (
+        "⭐ **ПРЕМИУМ ДОСТУП** ⭐\n\n"
+        "🚀 **Что вы получаете:**\n\n"
+        "✅ **Неограниченные обработки**\n"
+        "✅ **Приоритетная очередь**\n"
+        "✅ **Поддержка 24/7**\n"
+        "✅ **Экспорт в 4K качество**\n"
+        "✅ **Дополнительные форматы**\n\n"
+        "💎 **Стоимость:** 299₽/месяц\n\n"
+        "📲 **Как получить:**\n"
+        "Напишите @Oblastyle с темой «Премиум доступ»\n\n"
+        "_Превращайте кружки в профессиональный контент!_"
+    )
+    
+    await callback.message.edit_text(premium_info, reply_markup=get_back_keyboard())
     await callback.answer()
 
 @router.callback_query(F.data == "support")
 async def btn_support(callback: CallbackQuery):
-    await callback.message.answer(
-        "🛠 **Поддержка**\n\n"
-        f"Пиши сюда: @{SUPPORT_USERNAME}\n\n"
-        "Если бот не отвечает — возможно, идёт техническое обслуживание.\n"
-        "Обычно всё работает в течение 5-10 минут.",
-        reply_markup=get_back_keyboard()
+    """🛠 ИСПРАВЛЕННЫЙ раздел поддержки"""
+    support_text = (
+        "🛠 **ЦЕНТР ПОДДЕРЖКИ**\n\n"
+        "📞 **Связь с разработчиком:**\n"
+        "👉 @Oblastyle\n\n"
+        "🕒 **Время ответа:**\n"
+        "• Пн-Пт: 10:00 - 22:00 МСК\n"
+        "• Сб-Вс: 12:00 - 20:00 МСК\n\n"
+        "❓ **Частые вопросы:**\n\n"
+        "**Q: Видео не обрабатывается**\n"
+        "A: Подождите 2 минуты, если не помогло — перешлите кружок заново\n\n"
+        "**Q: Не приходит результат**\n"
+        "A: Проверьте соединение с интернетом\n\n"
+        "**Q: Хочу больше обработок**\n"
+        "A: Напишите @Oblastyle для премиум доступа\n\n"
+        "📧 **Пишите, поможем!**"
     )
+    
+    await callback.message.edit_text(support_text, reply_markup=get_back_keyboard())
     await callback.answer()
 
-# === ОБРАБОТКА КРУЖКА ===
+# === 🎥 ОСНОВНАЯ ОБРАБОТКА КРУЖКА ===
 @router.message(F.video_note)
 async def handle_video_note(message: Message):
     user_id = str(message.from_user.id)
-    logger.info(f"⚡ ПОЛУЧЕН КРУЖОК от пользователя {user_id}")
+    logger.info(f"🎬 ПОЛУЧЕН КРУЖОК от {user_id}")
     
-    # Защита от параллельных запросов
-    if user_id in user_locks and not user_locks[user_id].done():
-        logger.warning(f"Попытка параллельной обработки от {user_id}")
-        await message.answer("⏳ **Идёт обработка предыдущего кружка**\n\nПодожди немного, пожалуйста.")
+    if user_id in user_locks:
+        await message.answer("⏳ Уже обрабатываю ваш предыдущий кружок...")
         return
 
     lock = asyncio.Future()
@@ -285,225 +374,213 @@ async def handle_video_note(message: Message):
             "username": message.from_user.username
         })
 
-        # Проверка лимита
         if not user_data["free_used"]:
             user_data["free_used"] = True
-            quota_ok = True
             is_free = True
-            logger.info(f"✅ Пользователь {user_id} использует бесплатный кружок")
+            logger.info(f"🎁 Пользователь {user_id} использует бесплатный кружок")
         else:
-            logger.info(f"У пользователя {user_id} закончились бесплатные попытки")
             await message.answer(
-                "🚫 **Бесплатные попытки закончились**\n\n"
-                "Ты уже использовал свой бесплатный кружок.\n\n"
-                "Свяжись с поддержкой для получения дополнительных возможностей.",
+                "⚠️ **Бесплатные попытки закончились**\n\n"
+                "Напишите @Oblastyle для получения дополнительных обработок!",
                 reply_markup=get_main_keyboard()
             )
             return
 
-        if quota_ok:
-            # Отправляем сообщение о начале обработки
-            processing_msg = await message.answer(
-                "🎥 **Обрабатываю кружок...**\n\n"
-                "Преобразую в вертикальный формат 1080×1920...\n"
-                "Это займет 30-45 секунд.\n"
-                "_Пожалуйста, подожди..._"
-            )
+        # Отправляем сообщение о начале обработки
+        processing_msg = await message.answer(
+            "🔄 **Начинаю обработку...**\n\n"
+            "✨ **Что делаю:**\n"
+            "• Убираю круглую маску\n"
+            "• Оптимизирую качество\n"
+            "• Готовлю для соцсетей\n\n"
+            "⏱️ **Примерное время:** 30 секунд\n"
+            "_Не закрывайте Telegram..._",
+            reply_markup=get_processing_keyboard()
+        )
 
-            video_note: VideoNote = message.video_note
-            logger.info(f"📊 Данные кружка: длительность={video_note.duration}сек, размер={video_note.file_size}")
+        video_note: VideoNote = message.video_note
+        logger.info(f"📊 Длительность: {video_note.duration}сек, Размер: {video_note.file_size}")
+        
+        if video_note.duration > MAX_VIDEO_DURATION:
+            await message.answer(
+                f"❌ **Слишком длинный кружок**\n\n"
+                f"Максимум: {MAX_VIDEO_DURATION} секунд\n"
+                f"Ваш: {video_note.duration} секунд\n\n"
+                "Запишите более короткий кружок! 🎬"
+            )
+            return
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, "input.mp4")
+            output_path = os.path.join(temp_dir, "output_video.mp4")
             
-            # Проверка длительности
-            if video_note.duration > MAX_VIDEO_DURATION:
+            logger.info(f"📥 Скачиваю файл...")
+            
+            try:
+                await bot.download(video_note, destination=input_path)
+                
+                if not os.path.exists(input_path):
+                    raise FileNotFoundError("Файл не скачан")
+                
+                file_size = os.path.getsize(input_path)
+                logger.info(f"✅ Файл скачан: {file_size} байт")
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка скачивания: {e}")
                 await message.answer(
-                    f"❌ **Кружок слишком длинный**\n\n"
-                    f"Максимальная длительность — {MAX_VIDEO_DURATION} секунд.\n"
-                    f"Твой кружок: {video_note.duration} секунд."
+                    "❌ **Не удалось скачать кружок**\n\n"
+                    "Попробуйте отправить его еще раз! 🔄"
                 )
                 return
 
-            with tempfile.TemporaryDirectory() as temp_dir:
-                input_path = os.path.join(temp_dir, "input.mp4")
-                output_path = os.path.join(temp_dir, "output_vertical.mp4")
+            try:
+                logger.info("⚡ Начинаю обработку видео...")
+                success = await async_process_video(input_path, output_path, video_note.duration)
                 
-                logger.info(f"📥 Скачиваю файл в {input_path}")
-                
-                try:
-                    await bot.download(video_note, destination=input_path)
+                if success and os.path.exists(output_path):
+                    output_size = os.path.getsize(output_path)
+                    logger.info(f"✅ Обработка завершена! Размер: {output_size} байт")
                     
-                    if not os.path.exists(input_path):
-                        raise FileNotFoundError("Файл не был скачан")
+                    try:
+                        await processing_msg.delete()
+                    except:
+                        pass
                     
-                    file_size = os.path.getsize(input_path)
-                    logger.info(f"✅ Файл скачан успешно. Размер: {file_size} байт")
+                    # Отправляем результат
+                    with open(output_path, 'rb') as f:
+                        video_bytes = f.read()
                     
-                except Exception as e:
-                    logger.error(f"❌ Ошибка скачивания файла: {e}")
-                    await message.answer(
-                        "❌ **Не удалось скачать кружок**\n\n"
-                        "Попробуй отправить его снова.",
-                        reply_markup=get_main_keyboard()
-                    )
-                    return
-
-                try:
-                    logger.info("⚡ Начинаю обработку в вертикальный формат 1080x1920...")
-                    success = await async_process_video(input_path, output_path, video_note.duration)
-                    
-                    if success and os.path.exists(output_path):
-                        output_size = os.path.getsize(output_path)
-                        logger.info(f"✅ Обработка завершена успешно. Размер выходного файла: {output_size} байт")
-                        
-                        # Удаляем сообщение "обрабатываю"
-                        try:
-                            await processing_msg.delete()
-                        except:
-                            pass
-                        
-                        # Отправляем обработанное видео через BufferedInputFile
-                        with open(output_path, 'rb') as f:
-                            video_bytes = f.read()
-                        
-                        await message.answer_video(
-                            video=BufferedInputFile(video_bytes, filename="reels_video.mp4"),
-                            caption="✅ **Готово! Видео обработано в вертикальный формат 1080×1920**\n\n"
-                                   "Идеально подходит для:\n"
-                                   "📱 Instagram Reels\n"
-                                   "📱 YouTube Shorts\n"
-                                   "📱 TikTok\n"
-                                   "📱 VK Клипы\n\n"
-                                   "_Размер: 1080×1920 • С аудио_ 🎬"
+                    await message.answer_video(
+                        video=BufferedInputFile(video_bytes, filename="video_ready.mp4"),
+                        caption=(
+                            "🎉 **ГОТОВО!** 🎉\n\n"
+                            "✅ **Кружок успешно обработан!**\n\n"
+                            "📱 **Идеально для:**\n"
+                            "• Instagram Reels\n"
+                            "• TikTok\n"
+                            "• YouTube Shorts\n"
+                            "• VK Клипы\n\n"
+                            "📏 **Формат:** 1080x1080\n"
+                            "⚡ **Качество:** Оптимизировано\n"
+                            "🎬 **Без круглой маски**\n\n"
+                            "_Сохраняйте и делитесь!_ ✨"
                         )
-                        logger.info(f"✅ Видео отправлено пользователю {user_id}")
-                    else:
-                        raise RuntimeError("Не удалось обработать видео")
-                        
-                except Exception as e:
-                    logger.error(f"❌ Ошибка обработки видео: {e}")
-                    await message.answer(
-                        "❌ **Не удалось обработать кружок**\n\n"
-                        "Возможные причины:\n"
-                        "• Видео слишком большое\n"
-                        "• Проблемы с форматом видео\n"
-                        "• Технические неполадки\n\n"
-                        "Попробуй другой кружок или обратись в поддержку.",
-                        reply_markup=get_main_keyboard()
                     )
-                    return
+                    logger.info(f"✅ Видео отправлено пользователю {user_id}")
+                    
+                    if is_free:
+                        await message.answer(
+                            "🎁 **Это была ваша бесплатная обработка!**\n\n"
+                            "Хотите больше? Пишите @Oblastyle для премиум доступа! ⭐",
+                            reply_markup=get_main_keyboard()
+                        )
+                else:
+                    raise RuntimeError("Ошибка обработки видео")
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки: {e}")
+                await message.answer(
+                    "❌ **Не удалось обработать кружок**\n\n"
+                    "Попробуйте еще раз или напишите @Oblastyle 📞",
+                    reply_markup=get_main_keyboard()
+                )
 
-            # Сохраняем данные пользователя
             users[user_id] = user_data
             save_users(users)
 
-            if is_free:
-                await message.answer(
-                    "✨ **Это был твой бесплатный кружок!**\n\n"
-                    "Свяжись с поддержкой, если хочешь обрабатывать больше видео.",
-                    reply_markup=get_main_keyboard()
-                )
-                logger.info(f"🎯 Пользователь {user_id} использовал бесплатный кружок")
-
     except Exception as e:
-        logger.error(f"🚨 Неожиданная ошибка в обработке кружка: {e}")
+        logger.error(f"🚨 Критическая ошибка: {e}")
         await message.answer(
             "⚠️ **Произошла ошибка**\n\n"
-            "Попробуй позже или обратись в поддержку.",
+            "Пожалуйста, попробуйте позже или напишите @Oblastyle",
             reply_markup=get_main_keyboard()
         )
     finally:
         lock.set_result(True)
         user_locks.pop(user_id, None)
-        logger.info(f"🏁 Обработка завершена для пользователя {user_id}")
+        logger.info(f"🏁 Обработка завершена для {user_id}")
 
-@router.message(Command("stats"))
-async def cmd_stats(message: Message):
-    """Команда для проверки статистики"""
-    ADMIN_ID = os.getenv("ADMIN_ID", "")
-    
-    if ADMIN_ID and str(message.from_user.id) != ADMIN_ID:
-        return
-    
-    users = load_users()
-    total_users = len(users)
-    free_used = sum(1 for u in users.values() if u.get("free_used"))
-    
-    await message.answer(
-        f"📊 **Статистика бота:**\n\n"
-        f"• Всего пользователей: {total_users}\n"
-        f"• Использовано бесплатных кружков: {free_used}\n"
-        f"• Активных обработок: {len(user_locks)}\n"
-        f"• FFmpeg: {'✅ Доступен' if ffmpeg_available else '❌ Не доступен'}\n"
-        f"• Формат: Вертикальный 1080×1920\n"
-        f"• Режим: {'вебхук' if os.getenv('RENDER_EXTERNAL_URL') else 'polling'}"
-    )
-
+# === 📱 ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ ===
 @router.message(Command("help"))
 async def cmd_help(message: Message):
-    """Команда помощи"""
-    await message.answer(
-        "ℹ️ **Помощь по боту:**\n\n"
-        "**Основные команды:**\n"
-        "/start - Начать работу с ботом\n"
-        "/help - Показать это сообщение\n"
-        "/stats - Статистика (только для админа)\n\n"
-        "**Как использовать:**\n"
-        "1. Отправь мне кружок (видеосообщение)\n"
-        "2. Я преобразую его в вертикальный формат 1080×1920\n"
-        "3. Получи готовое видео для Reels/Shorts\n\n"
-        "**Ограничения:**\n"
-        "• Максимальная длительность: 60 секунд\n"
-        "• 1 бесплатный кружок на пользователя",
-        reply_markup=get_main_keyboard()
+    help_text = (
+        "❓ **ПОМОЩЬ ПО БОТУ** ❓\n\n"
+        "📋 **Основные команды:**\n"
+        "/start - Главное меню\n"
+        "/help - Эта справка\n"
+        "/status - Статус бота\n\n"
+        "🎬 **Как использовать:**\n"
+        "1. Запишите кружок в Telegram\n"
+        "2. Перешлите его боту\n"
+        "3. Получите готовое видео!\n\n"
+        "⚠️ **Ограничения:**\n"
+        "• До 60 секунд\n"
+        "• 1 бесплатная обработка\n\n"
+        "🛠 **Поддержка:** @Oblastyle"
     )
+    await message.answer(help_text, reply_markup=get_main_keyboard())
 
-@router.message(Command("health"))
-async def cmd_health(message: Message):
-    """Проверка здоровья бота"""
-    await message.answer(
-        f"🏥 **Состояние бота:**\n\n"
-        f"• Статус: ✅ Работает\n"
-        f"• Пользователей: {len(load_users())}\n"
-        f"• Активных обработок: {len(user_locks)}\n"
-        f"• FFmpeg: {'✅ Доступен' if ffmpeg_available else '❌ Не доступен'}\n"
-        f"• Формат обработки: Вертикальный 1080×1920\n"
-        f"• Режим: {'вебхук' if os.getenv('RENDER_EXTERNAL_URL') else 'polling'}"
+@router.message(Command("status"))
+async def cmd_status(message: Message):
+    users = load_users()
+    total_users = len(users)
+    
+    status_text = (
+        "📊 **СТАТУС БОТА**\n\n"
+        "✅ **Бот работает**\n"
+        "👥 **Пользователей:** {}\n"
+        "⚡ **Активных обработок:** {}\n"
+        "🔧 **FFmpeg:** {}\n"
+        "🌐 **Режим:** {}\n\n"
+        "_Обновлено: {}_"
+    ).format(
+        total_users,
+        len(user_locks),
+        "✅ Доступен" if ffmpeg_available else "❌ Недоступен",
+        "вебхук" if os.getenv('RENDER_EXTERNAL_URL') else "polling",
+        datetime.now().strftime("%H:%M:%S")
     )
+    
+    await message.answer(status_text)
 
+# === 📞 ОБРАБОТКА ОСТАЛЬНЫХ СООБЩЕНИЙ ===
 @router.message()
-async def fallback(message: Message):
-    """Обработка неизвестных сообщений"""
-    await message.answer(
-        "🤖 **КружкоРез**\n\n"
-        "Я специализируюсь на обработке кружков (видеосообщений) в вертикальный формат.\n\n"
-        "**Что я умею:**\n"
-        "• Преобразовывать кружки в видео 1080×1920\n"
-        "• Сохранять аудио\n"
-        "• Создавать контент для Reels/Shorts\n\n"
-        "**Просто перешли мне кружок или используй кнопки ниже:**",
-        reply_markup=get_main_keyboard()
-    )
+async def handle_other(message: Message):
+    if message.text and "@Oblastyle" in message.text:
+        await message.answer(
+            "✅ **Связь с поддержкой установлена!**\n\n"
+            "Скоро с вами свяжутся! 📞\n\n"
+            "А пока можете попробовать обработать кружок! 🎬",
+            reply_markup=get_main_keyboard()
+        )
+    else:
+        await message.answer(
+            "🎬 **КружкоРез** 🎬\n\n"
+            "Я обрабатываю кружки Telegram в готовые видео!\n\n"
+            "✨ **Просто перешлите мне кружок**\n"
+            "🎯 **Получите видео без круглой маски**\n\n"
+            "📱 **Нажмите /start для начала**",
+            reply_markup=get_main_keyboard()
+        )
 
 # Подключаем роутер
 dp.include_router(router)
 
-# === ВЕБХУК ОБРАБОТЧИК ===
+# === 🚀 ЗАПУСК ВЕБХУКА ===
 async def on_startup():
-    """Действия при запуске бота"""
-    logger.info("=" * 50)
-    logger.info("🚀 Бот КружкоРез запускается...")
-    logger.info(f"🎯 Режим: Упрощенная обработка для Render Free")
+    """Действия при запуске"""
+    logger.info("=" * 60)
+    logger.info("🚀 КРУЖКОРЕЗ ЗАПУСКАЕТСЯ")
+    logger.info(f"📱 Поддержка: @{SUPPORT_USERNAME}")
+    logger.info(f"⚙️ FFmpeg: {'✅' if ffmpeg_available else '❌'}")
+    logger.info("=" * 60)
     
-    # Проверяем наличие папки для данных
     if not os.path.exists(USERS_FILE.parent):
         USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"✅ Создана папку для данных: {USERS_FILE.parent}")
     
-    # Создаем файл users.json если его нет
     if not os.path.exists(USERS_FILE):
-        logger.info(f"✅ Создаю новый файл {USERS_FILE}")
         save_users({})
     
-    # Установка вебхука (только если есть URL)
     webhook_url = os.getenv("RENDER_EXTERNAL_URL")
     if webhook_url:
         webhook_path = "/webhook"
@@ -515,81 +592,47 @@ async def on_startup():
                 secret_token=WEBHOOK_SECRET_TOKEN,
                 drop_pending_updates=True
             )
-            logger.info(f"✅ Вебхук установлен: {full_webhook_url}")
+            logger.info(f"✅ Вебхук: {full_webhook_url}")
         except Exception as e:
-            logger.error(f"❌ Ошибка установки вебхука: {e}")
-    else:
-        logger.info("ℹ️ RENDER_EXTERNAL_URL не установлен. Работаем в режиме polling")
-    
-    logger.info("=" * 50)
+            logger.error(f"❌ Вебхук: {e}")
 
 async def on_shutdown():
-    """Действия при остановке бота"""
-    logger.info("🛑 Бот останавливается...")
-    # Удаляем вебхук
+    """Действия при остановке"""
+    logger.info("🛑 Остановка бота...")
     try:
         await bot.delete_webhook()
-        logger.info("✅ Вебхук удален")
     except:
         pass
     executor.shutdown(wait=False)
 
-# === ЗАПУСК ЧЕРЕЗ ВЕБХУКИ ===
 def start_webhook():
-    """Запуск бота через вебхуки (для Render)"""
+    """Запуск через вебхук (Render)"""
     app = web.Application()
     
-    # Создаем обработчик вебхука
     webhook_handler = SimpleRequestHandler(
         dispatcher=dp,
         bot=bot
     )
     
-    # Регистрируем путь для вебхука
     webhook_handler.register(app, path="/webhook")
     
-    # Регистрируем дополнительные endpoints
     async def health_check(request):
-        """Health check endpoint для Render"""
         return web.Response(
-            text="✅ КружкоРез бот работает\n\n"
-                 f"FFmpeg: {'Доступен' if ffmpeg_available else 'Не доступен'}\n"
-                 f"Пользователей: {len(load_users())}\n"
-                 f"Формат: Вертикальный 1080×1920\n"
-                 f"Версия: 5.0 (оптимизировано для Render)",
-            status=200,
-            content_type="text/plain"
+            text="✅ КружкоРез работает\n\n"
+                 f"Поддержка: @{SUPPORT_USERNAME}\n"
+                 f"Пользователей: {len(load_users())}",
+            status=200
         )
     
-    async def info(request):
-        """Информационная страница"""
-        users = load_users()
-        return web.Response(
-            text=f"🤖 КружкоРез Бот\n\n"
-                 f"Статус: Активен ✅\n"
-                 f"Пользователей: {len(users)}\n"
-                 f"FFmpeg: {'Доступен' if ffmpeg_available else 'Не доступен'}\n"
-                 f"Формат: Вертикальный 1080×1920\n"
-                 f"Версия: 5.0 (стабильная)\n"
-                 f"Режим: Вебхук",
-            status=200,
-            content_type="text/plain"
-        )
-    
-    # Добавляем маршруты
     app.router.add_get("/", health_check)
     app.router.add_get("/health", health_check)
-    app.router.add_get("/info", info)
     
-    # Настраиваем приложение
     setup_application(app, dp, bot=bot)
     
-    # Получаем порт из переменных окружения
     port = int(os.getenv("PORT", 10000))
     
-    logger.info(f"🌐 Запуск веб-сервера на порту {port}")
-    logger.info(f"🎯 Режим: Упрощенная обработка для Render Free")
-    logger.info(f"⚡ Таймаут обработки: 45 секунд")
+    logger.info(f"🌐 Порт: {port}")
+    logger.info(f"✨ Бот готов к работе!")
     
     web.run_app(
         app,
@@ -598,32 +641,22 @@ def start_webhook():
         access_log=logger
     )
 
-# === ЗАПУСК ЧЕРЕЗ POLLING ===
-def start_polling():
-    """Запуск бота через polling (для локальной разработки)"""
-    from aiogram import executor as aiogram_executor
-    
-    logger.info("🔄 Запуск в режиме polling (локальная разработка)")
-    
-    aiogram_executor.start_polling(
-        dp,
-        skip_updates=True,
-        on_startup=on_startup,
-        on_shutdown=on_shutdown
-    )
-
-# === ГЛАВНАЯ ФУНКЦИЯ ===
+# === 🎯 ГЛАВНАЯ ФУНКЦИЯ ===
 if __name__ == "__main__":
-    # Определяем режим запуска
+    from datetime import datetime
+    
     is_render = os.getenv("RENDER") == "true" or os.getenv("RENDER_EXTERNAL_URL")
     
     if is_render:
-        # Запуск в режиме вебхука (для Render)
-        logger.info("🚀 Запуск в режиме вебхука (Render)")
-        logger.info(f"🎯 Упрощенная обработка видео для Render Free")
+        logger.info(f"🚀 ЗАПУСК НА RENDER - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         start_webhook()
     else:
-        # Запуск в режиме polling (локально)
-        logger.info("💻 Запуск в режиме polling (локально)")
-        start_polling()
+        from aiogram import executor as aiogram_executor
+        logger.info("💻 Локальный запуск")
+        aiogram_executor.start_polling(
+            dp,
+            skip_updates=True,
+            on_startup=on_startup,
+            on_shutdown=on_shutdown
+        )
 

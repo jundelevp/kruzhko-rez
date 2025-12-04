@@ -665,15 +665,12 @@ if __name__ == "__main__":
     if is_render:
         # Запуск в режиме вебхука (для Render)
         logger.info("🚀 Запуск в режиме вебхука (Render)")
-        
-        # Запускаем on_startup вручную
-        asyncio.run(on_startup())
-        
         start_webhook()
     else:
         # Запуск в режиме polling (локально)
         logger.info("💻 Запуск в режиме polling (локально)")
         start_polling()
+
 
 
 

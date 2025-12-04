@@ -16,11 +16,14 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
+from aiogram.client.session.aiohttp import AiohttpSession
 
 # === НАСТРОЙКИ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8535285877:AAFkJEwV18KFCnEJPAyTR2AsSsgvQbTA6fg")
+WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "default_secret_token_123")
+
 if not BOT_TOKEN:
-    logger.error("❌ BOT_TOKEN не найден в переменных окружения!")
+    print("❌ ОШИБКА: BOT_TOKEN не установлен!")
     exit(1)
 
 print(f"🔥 Бот стартует! Токен: {BOT_TOKEN[:10]}...")
@@ -29,7 +32,7 @@ MAX_VIDEO_DURATION = 60
 FREE_LIMIT = 1
 PREMIUM_QUOTA = 15
 PRICE = 199
-SUPPORT_USERNAME = "@your_support_username"
+SUPPORT_USERNAME = "@kruzhkorez_support"
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
@@ -48,8 +51,10 @@ user_locks = {}
 executor = ThreadPoolExecutor(max_workers=2)
 
 # === ИНИЦИАЛИЗАЦИЯ БОТА ===
+session = AiohttpSession(timeout=30)
 bot = Bot(
     token=BOT_TOKEN,
+    session=session,
     default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
 )
 dp = Dispatcher()
@@ -587,8 +592,8 @@ def start_webhook():
     # Создаем обработчик вебхука
     webhook_handler = SimpleRequestHandler(
         dispatcher=dp,
-        bot=bot,
-        secret_token=WEBHOOK_SECRET_TOKEN
+        bot=bot
+        # secret_token=WEBHOOK_SECRET_TOKEN  # временно отключено
     )
     
     # Регистрируем путь для вебхука
@@ -629,7 +634,6 @@ def start_webhook():
     port = int(os.getenv("PORT", 10000))
     
     logger.info(f"🌐 Запуск веб-сервера на порту {port}")
-    logger.info(f"🔐 Секретный токен вебхука: {WEBHOOK_SECRET_TOKEN[:10]}...")
     logger.info(f"📊 Health check: http://0.0.0.0:{port}/health")
     
     web.run_app(
@@ -661,6 +665,10 @@ if __name__ == "__main__":
     if is_render:
         # Запуск в режиме вебхука (для Render)
         logger.info("🚀 Запуск в режиме вебхука (Render)")
+        
+        # Запускаем on_startup вручную
+        asyncio.run(on_startup())
+        
         start_webhook()
     else:
         # Запуск в режиме polling (локально)

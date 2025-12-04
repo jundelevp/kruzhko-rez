@@ -9,7 +9,8 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
-    Message, VideoNote, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+    Message, VideoNote, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
+    InputFile
 )
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
@@ -361,17 +362,18 @@ async def handle_video_note(message: Message):
                         except:
                             pass
                         
-                        # Отправляем результат
-                        await message.answer_video(
-                            video=output_path,
-                            caption="✅ **Готово!**\n\n"
-                                   "Сохраняй видео и выкладывай в:\n"
-                                   "• Instagram Reels\n"
-                                   "• YouTube Shorts\n"
-                                   "• TikTok\n"
-                                   "• VK Клипы\n\n"
-                                   "_Приятного использования!_ 🎬"
-                        )
+                        # ВАЖНО: Отправляем видео через InputFile (исправление ошибки!)
+                        with open(output_path, 'rb') as video_file:
+                            await message.answer_video(
+                                video=InputFile(video_file, filename="kruzhkorez.mp4"),
+                                caption="✅ **Готово!**\n\n"
+                                       "Сохраняй видео и выкладывай в:\n"
+                                       "• Instagram Reels\n"
+                                       "• YouTube Shorts\n"
+                                       "• TikTok\n"
+                                       "• VK Клипы\n\n"
+                                       "_Приятного использования!_ 🎬"
+                            )
                         logger.info(f"✅ Видео отправлено пользователю {user_id}")
                     else:
                         raise RuntimeError("Выходной файл не создан")
@@ -548,7 +550,8 @@ def start_webhook():
         return web.Response(
             text="✅ КружкоРез бот работает\n\n"
                  f"FFmpeg: {'Доступен' if ffmpeg_available else 'Не доступен'}\n"
-                 f"Пользователей: {len(load_users())}",
+                 f"Пользователей: {len(load_users())}\n"
+                 f"Версия: 2.1 (исправлена отправка видео)",
             status=200,
             content_type="text/plain"
         )
@@ -561,7 +564,7 @@ def start_webhook():
                  f"Статус: Активен ✅\n"
                  f"Пользователей: {len(users)}\n"
                  f"FFmpeg: {'Доступен' if ffmpeg_available else 'Не доступен'}\n"
-                 f"Версия: 2.0 (упрощенная)\n"
+                 f"Версия: 2.1 (упрощенная)\n"
                  f"Режим: Вебхук",
             status=200,
             content_type="text/plain"
@@ -580,6 +583,7 @@ def start_webhook():
     
     logger.info(f"🌐 Запуск веб-сервера на порту {port}")
     logger.info(f"⚡ Упрощенный режим обработки (таймаут 15 сек)")
+    logger.info(f"📤 Исправлена отправка видео через InputFile")
     
     web.run_app(
         app,

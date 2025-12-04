@@ -18,8 +18,10 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 
 # === НАСТРОЙКИ ===
-BOT_TOKEN = "8535285877:AAFkJEwV18KFCnEJPAyTR2AsSsgvQbTA6fg"  # ТВОЙ ТОКЕН УЖЕ ТУТ
-WEBHOOK_SECRET_TOKEN = "RENDER_WILL_GENERATE_THIS"  # Рендер сам сгенерирует
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8535285877:AAFkJEwV18KFCnEJPAyTR2AsSsgvQbTA6fg")
+if not BOT_TOKEN:
+    logger.error("❌ BOT_TOKEN не найден в переменных окружения!")
+    exit(1)
 
 print(f"🔥 Бот стартует! Токен: {BOT_TOKEN[:10]}...")
 
@@ -664,5 +666,6 @@ if __name__ == "__main__":
         # Запуск в режиме polling (локально)
         logger.info("💻 Запуск в режиме polling (локально)")
         start_polling()
+
 
 

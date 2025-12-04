@@ -18,7 +18,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 
 # === НАСТРОЙКИ ===
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("8535285877:AAFkJEwV18KFCnEJPAyTR2AsSsgvQbTA6fg", "")
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "DEFAULT_SECRET_TOKEN_CHANGE_ME")
 
 # Проверка переменных окружения
@@ -666,4 +666,5 @@ if __name__ == "__main__":
     else:
         # Запуск в режиме polling (локально)
         logger.info("💻 Запуск в режиме polling (локально)")
+
         start_polling()

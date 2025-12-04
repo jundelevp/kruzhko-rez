@@ -17,20 +17,34 @@ from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
-# === НАСТРОЙКИ ===
-BOT_TOKEN = os.getenv("8535285877:AAFkJEwV18KFCnEJPAyTR2AsSsgvQbTA6fg")
-WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "DEFAULT_SECRET_TOKEN_CHANGE_ME")
+# === НАСТРОЙКИ ДЛЯ RENDER ===
+# ВРЕМЕННО ДЛЯ ТЕСТА - ВСТАВЬТЕ СВОЙ ТОКЕН ЗДЕСЬ
+BOT_TOKEN = "8535285877:AAFkJEwV18KFCnEJPAyTR2AsSsgvQbTA6fg"
 
-# Проверка переменных окружения
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN не установлен. Установите в настройках Render")
+# Пока отключаем проверку
+# WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "DEFAULT_SECRET_TOKEN_CHANGE_ME")
+
+# ВРЕМЕННО ЗАКОММЕНТИРОВАТЬ ЭТУ ПРОВЕРКУ!
+# if not BOT_TOKEN:
+#     raise ValueError("❌ BOT_TOKEN не установлен. Установите в настройках Render")
+
+# Выведем токен для отладки
+print(f"🚀 Бот запускается. Токен: {BOT_TOKEN[:10]}...")
 
 CURRENCY = "RUB"
 MAX_VIDEO_DURATION = 60
 FREE_LIMIT = 1
 PREMIUM_QUOTA = 15
 PRICE = 199
-SUPPORT_USERNAME = "@your_support_username"
+SUPPORT_USERNAME = "@Oblastyle"
+
+# === ЛОГИРОВАНИЕ ===
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
@@ -668,4 +682,5 @@ if __name__ == "__main__":
         logger.info("💻 Запуск в режиме polling (локально)")
 
         start_polling()
+
 

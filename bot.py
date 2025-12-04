@@ -17,34 +17,17 @@ from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
-# === НАСТРОЙКИ ДЛЯ RENDER ===
-# ВРЕМЕННО ДЛЯ ТЕСТА - ВСТАВЬТЕ СВОЙ ТОКЕН ЗДЕСЬ
-BOT_TOKEN = "8535285877:AAFkJEwV18KFCnEJPAyTR2AsSsgvQbTA6fg"
+# === НАСТРОЙКИ ===
+BOT_TOKEN = "8535285877:AAFkJEwV18KFCnEJPAyTR2AsSsgvQbTA6fg"  # ТВОЙ ТОКЕН УЖЕ ТУТ
+WEBHOOK_SECRET_TOKEN = "RENDER_WILL_GENERATE_THIS"  # Рендер сам сгенерирует
 
-# Пока отключаем проверку
-# WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "DEFAULT_SECRET_TOKEN_CHANGE_ME")
+print(f"🔥 Бот стартует! Токен: {BOT_TOKEN[:10]}...")
 
-# ВРЕМЕННО ЗАКОММЕНТИРОВАТЬ ЭТУ ПРОВЕРКУ!
-# if not BOT_TOKEN:
-#     raise ValueError("❌ BOT_TOKEN не установлен. Установите в настройках Render")
-
-# Выведем токен для отладки
-print(f"🚀 Бот запускается. Токен: {BOT_TOKEN[:10]}...")
-
-CURRENCY = "RUB"
 MAX_VIDEO_DURATION = 60
 FREE_LIMIT = 1
 PREMIUM_QUOTA = 15
 PRICE = 199
-SUPPORT_USERNAME = "@Oblastyle"
-
-# === ЛОГИРОВАНИЕ ===
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger(__name__)
+SUPPORT_USERNAME = "@your_support_username"
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
@@ -556,7 +539,7 @@ async def on_startup():
     # Проверяем наличие папки для данных
     if not os.path.exists(USERS_FILE.parent):
         USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"✅ Создана папка для данных: {USERS_FILE.parent}")
+        logger.info(f"✅ Создана папку для данных: {USERS_FILE.parent}")
     
     # Создаем файл users.json если его нет
     if not os.path.exists(USERS_FILE):
@@ -680,7 +663,6 @@ if __name__ == "__main__":
     else:
         # Запуск в режиме polling (локально)
         logger.info("💻 Запуск в режиме polling (локально)")
-
         start_polling()
 
 

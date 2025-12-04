@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: video-circle-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ROBOKASSA_LOGIN
+        sync: false
+      - key: ROBOKASSA_PASSWORD1
+        sync: false

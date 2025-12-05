@@ -1,25 +1,29 @@
 FROM python:3.10-slim
 
-# 1. Сначала обновляем APT и устанавливаем нужные пакеты
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 1. Сначала запускаем apt-get update, чтобы создать sources.list
+RUN apt-get update
+
+# 2. ТЕПЕРЬ меняем зеркало (файл уже существует)
+RUN sed -i 's|deb.debian.org|mirror.yandex.ru|g' /etc/apt/sources.list && \
+    sed -i 's|security.debian.org|mirror.yandex.ru/debian-security|g' /etc/apt/sources.list
+
+# 3. Обновляем репозитории с новым зеркалом
+RUN apt-get update
+
+# 4. Устанавливаем FFmpeg и зависимости
+RUN apt-get install -y --no-install-recommends \
     ffmpeg \
     libsm6 \
     libxext6 \
     libgl1-mesa-glx \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
-# 2. Меняем зеркало репозитория (после установки основных пакетов)
-# Для Debian bullseye (который используется в python:3.10-slim)
-RUN echo "deb http://mirror.yandex.ru/debian bullseye main" > /etc/apt/sources.list && \
-    echo "deb http://mirror.yandex.ru/debian-security bullseye-security main" >> /etc/apt/sources.list && \
-    echo "deb http://mirror.yandex.ru/debian bullseye-updates main" >> /etc/apt/sources.list
 
 WORKDIR /app
 
 # Оптимизация Python
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONFAULTHANDLER=1 \
     PIP_NO_CACHE_DIR=1
 
 # Копируем зависимости
@@ -35,3 +39,4 @@ RUN mkdir -p /tmp/video_bot && chmod 777 /tmp/video_bot
 
 # Запуск бота
 CMD ["python", "-OO", "bot.py"]
+

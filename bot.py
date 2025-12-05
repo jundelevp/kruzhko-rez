@@ -20,9 +20,10 @@ from aiogram.client.default import DefaultBotProperties  # ← ВАЖНО!
 
 import psutil
 
-# Попробуем импортировать moviepy, если нет - установим позже
+# Попробуем импортировать moviepy
 try:
     import moviepy.editor as mp
+    from moviepy.video.VideoClip import ColorClip
     MOVIEPY_AVAILABLE = True
 except ImportError:
     MOVIEPY_AVAILABLE = False
@@ -138,7 +139,6 @@ def create_reels_video(input_path: Path, user_id: int) -> Optional[Path]:
         scaled = cropped.resize(scale_factor)
         
         # Создаем черный фон
-        from moviepy.video.VideoClip import ColorClip
         background = ColorClip(
             size=(OUTPUT_WIDTH, OUTPUT_HEIGHT),
             color=(0, 0, 0),
@@ -331,7 +331,6 @@ async def main():
         logger.error("FFmpeg не найден! Бот не будет работать")
     
     # Проверка MoviePy
-    global MOVIEPY_AVAILABLE
     if not MOVIEPY_AVAILABLE:
         logger.error("❌ MoviePy не установлен! Установите: pip install moviepy")
     else:
@@ -366,3 +365,4 @@ if __name__ == "__main__":
     
     # Запускаем бота
     asyncio.run(main())
+

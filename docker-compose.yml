@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: telegram-bot
+    restart: unless-stopped
+    # Ограничения ресурсов под 2 ГБ ОЗУ
+    deploy:
+      resources:
+        limits:
+          memory: 1800M
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    # Переменные окружения
+    environment:
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+    # Тома для сохранения данных
+    volumes:
+      - ./data:/app/data:rw

@@ -35,9 +35,7 @@ print(f"✨ Бот запускается... Токен: {BOT_TOKEN[:10]}...")
 MAX_VIDEO_DURATION = 60
 FREE_LIMIT = 1
 SUPPORT_USERNAME = "Oblastyle"
-MAX_FILE_SIZE_MB = 50  # Максимальный размер файла в MB
-MAX_CPU_PERCENT = 80   # Максимальная загрузка CPU
-MAX_MEMORY_PERCENT = 85 # Максимальная загрузка памяти
+MAX_FILE_SIZE_MB = 50
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
@@ -55,11 +53,11 @@ TEMP_DIR.mkdir(exist_ok=True)
 USERS_FILE.parent.mkdir(exist_ok=True)
 
 user_locks = {}
-# Ограничиваем воркеры для слабого хостинга
-executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video_processor")
+# Один воркер для слабого хостинга
+executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video_worker")
 
 # === ИНИЦИАЛИЗАЦИЯ БОТА ===
-session = AiohttpSession(timeout=60)  # Увеличиваем таймаут
+session = AiohttpSession(timeout=120)  # Большой таймаут для загрузки видео
 bot = Bot(
     token=BOT_TOKEN,
     session=session,
@@ -68,209 +66,128 @@ bot = Bot(
 dp = Dispatcher()
 router = Router()
 
-# === МОНИТОРИНГ РЕСУРСОВ ===
-def check_system_resources():
-    """Проверка загрузки системы"""
-    try:
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory_percent = psutil.virtual_memory().percent
-        
-        logger.info(f"📊 Мониторинг: CPU={cpu_percent}%, RAM={memory_percent}%")
-        
-        if cpu_percent > MAX_CPU_PERCENT:
-            logger.warning(f"⚠️ Высокая загрузка CPU: {cpu_percent}%")
-            return False
-            
-        if memory_percent > MAX_MEMORY_PERCENT:
-            logger.warning(f"⚠️ Высокая загрузка памяти: {memory_percent}%")
-            return False
-            
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка мониторинга: {e}")
-        return True
-
 # === ПРОВЕРКА FFMPEG ===
 def check_ffmpeg():
-    """Проверка наличия FFmpeg с версией"""
+    """Проверка наличия FFmpeg"""
     try:
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(['ffmpeg', '-version'], 
+                              capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
-            version_line = result.stdout.split('\n')[0]
-            logger.info(f"✅ FFmpeg найден: {version_line[:50]}")
-            
-            # Проверяем наличие кодеков
-            codec_check = subprocess.run(
-                ['ffmpeg', '-codecs'], capture_output=True, text=True, timeout=5
-            )
-            if 'libx264' in codec_check.stdout:
-                logger.info("✅ Кодек libx264 доступен")
-            else:
-                logger.warning("⚠️ Кодек libx264 недоступен")
-                
+            logger.info("✅ FFmpeg найден")
             return True
         else:
-            logger.warning("❌ FFmpeg не найден!")
+            logger.error("❌ FFmpeg не найден!")
             return False
-    except subprocess.TimeoutExpired:
-        logger.warning("⏱️ Таймаут проверки FFmpeg")
-        return False
     except Exception as e:
         logger.error(f"❌ Ошибка проверки FFmpeg: {e}")
         return False
 
 ffmpeg_available = check_ffmpeg()
 
-# === ОПТИМИЗИРОВАННАЯ ОБРАБОТКА ВИДЕО (Reels стиль) ===
-async def async_process_video_reels(input_path: str, output_path: str, duration: float):
-    """Оптимизированная обработка видео в Reels стиле с черными полосами"""
-    
-    def _process():
-        try:
-            if not os.path.exists(input_path):
-                raise FileNotFoundError(f"Входной файл не найден: {input_path}")
-            
-            file_size = os.path.getsize(input_path)
-            logger.info(f"🎞️ Начало обработки Reels. Размер: {file_size/1024/1024:.2f} MB")
-            
-            if not check_system_resources():
-                logger.warning("⚠️ Высокая нагрузка на систему, снижаем качество обработки")
-                quality_preset = 'ultrafast'  # Самая быстрая обработка
-                crf_value = '28'  # Немного хуже качество, но быстрее
+# === УЛУЧШЕННАЯ ОБРАБОТКА ВИДЕО ===
+def process_video_to_reels(input_path: str, output_path: str) -> bool:
+    """
+    Конвертация кружка в Reels формат (1080x1920 с черными полосами)
+    Возвращает True при успехе
+    """
+    try:
+        if not os.path.exists(input_path):
+            logger.error(f"❌ Входной файл не найден: {input_path}")
+            return False
+        
+        input_size = os.path.getsize(input_path)
+        logger.info(f"📁 Начало обработки. Размер входного файла: {input_size / 1024 / 1024:.2f} MB")
+        
+        # УПРОЩЕННАЯ КОМАНДА ДЛЯ ГАРАНТИРОВАННОЙ РАБОТЫ
+        cmd = [
+            'ffmpeg',
+            '-i', input_path,
+            '-hide_banner',
+            '-loglevel', 'error',
+            # Основная магия: конвертация в вертикальный формат с черными полосами
+            '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,'
+                   'pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,'
+                   'setsar=1',
+            # Видео настройки
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',  # Самый быстрый для слабого хостинга
+            '-crf', '28',            # Хороший баланс качество/размер
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+            # Аудио настройки (копируем без изменений для скорости)
+            '-c:a', 'copy',
+            '-y',  # Перезаписывать без подтверждения
+            output_path
+        ]
+        
+        logger.info(f"⚡ Запускаю FFmpeg: {' '.join(cmd[:5])}...")
+        
+        start_time = time.time()
+        
+        # Запускаем процесс
+        process = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=90  # 1.5 минуты максимум
+        )
+        
+        processing_time = time.time() - start_time
+        
+        if process.returncode == 0:
+            if os.path.exists(output_path):
+                output_size = os.path.getsize(output_path)
+                logger.info(f"✅ Видео обработано за {processing_time:.1f} сек!")
+                logger.info(f"📦 Размер результата: {output_size / 1024 / 1024:.2f} MB")
+                
+                # Быстрая проверка результата
+                check_cmd = [
+                    'ffprobe',
+                    '-v', 'quiet',
+                    '-show_entries', 'format=duration,size',
+                    '-of', 'json',
+                    output_path
+                ]
+                
+                try:
+                    result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        info = json.loads(result.stdout)
+                        duration = info.get('format', {}).get('duration', 0)
+                        logger.info(f"⏱️ Длительность результата: {float(duration):.1f} сек")
+                except:
+                    pass
+                
+                return True
             else:
-                quality_preset = 'fast'  # Баланс скорости и качества
-                crf_value = '26'  # Хорошее качество
+                logger.error("❌ Выходной файл не создан")
+                return False
+        else:
+            logger.error(f"❌ FFmpeg ошибка: {process.stderr[:200]}")
             
-            # ОПТИМИЗИРОВАННАЯ КОМАНДА ДЛЯ REELS:
-            # 1. Масштабируем с сохранением пропорций
-            # 2. Добавляем черные полосы для вертикального формата
-            # 3. Оптимизированные настройки для слабого хостинга
-            
-            cmd = [
+            # ПРОСТОЙ РЕЗЕРВНЫЙ ВАРИАНТ - копируем как есть
+            logger.info("🔄 Пробую простой вариант...")
+            simple_cmd = [
                 'ffmpeg',
                 '-i', input_path,
-                '-hide_banner',  # Скрываем лишнюю информацию
-                '-loglevel', 'error',  # Только ошибки
-                # Вертикальное видео 1080x1920 с черными полосами
-                '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,'
-                       'pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,'
-                       'setsar=1',  # Устанавливаем SAR=1 для правильного отображения
-                # Оптимизированные настройки видео
-                '-c:v', 'libx264',
-                '-preset', quality_preset,  # Используем быстрый пресет
-                '-crf', crf_value,          # Качество (меньше = лучше)
-                '-tune', 'fastdecode',      # Оптимизация для декодирования
-                '-profile:v', 'baseline',   # Совместимость со всеми устройствами
-                '-pix_fmt', 'yuv420p',      # Самый совместимый формат пикселей
-                '-movflags', '+faststart',  # Быстрый старт для веба
-                '-g', '30',                 # Частота ключевых кадров
-                # Аудио настройки
-                '-c:a', 'aac',
-                '-b:a', '96k',              # Низкий битрейт аудио
-                '-ac', '2',                 # Стерео звук
-                '-ar', '44100',             # Частота дискретизации
-                # Ограничение битрейта для экономии места
-                '-maxrate', '1500k',
-                '-bufsize', '3000k',
-                '-y',  # Перезапись без подтверждения
+                '-c', 'copy',  # Просто копируем все потоки
+                '-y',
                 output_path
             ]
             
-            logger.info(f"🔄 Запуск обработки Reels (preset: {quality_preset})...")
-            
-            start_time = time.time()
-            
-            # Запускаем с ограничением ресурсов
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                # Ограничиваем приоритет процесса для Linux
-                preexec_fn=lambda: os.nice(10) if hasattr(os, 'nice') else None
-            )
-            
-            try:
-                stdout, stderr = process.communicate(timeout=120)  # 2 минуты максимум
-                
-                if process.returncode == 0:
-                    processing_time = time.time() - start_time
-                    output_size = os.path.getsize(output_path)
-                    
-                    logger.info(f"✅ Reels видео обработано за {processing_time:.1f} сек!")
-                    logger.info(f"📦 Размер: {output_size/1024/1024:.2f} MB")
-                    
-                    # Быстрая проверка результата
-                    if os.path.exists(output_path) and output_size > 0:
-                        # Проверяем основные параметры
-                        check_cmd = [
-                            'ffprobe',
-                            '-v', 'quiet',
-                            '-select_streams', 'v:0',
-                            '-show_entries', 'stream=width,height,duration,codec_name,bit_rate',
-                            '-of', 'json',
-                            output_path
-                        ]
-                        
-                        try:
-                            check_result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=10)
-                            if check_result.returncode == 0:
-                                info = json.loads(check_result.stdout)
-                                streams = info.get('streams', [])
-                                if streams:
-                                    stream = streams[0]
-                                    logger.info(f"📐 Результат: {stream.get('width')}x{stream.get('height')}, "
-                                               f"кодек: {stream.get('codec_name')}")
-                        except:
-                            pass  # Не критично
-                        
-                        return True
-                    else:
-                        logger.error("❌ Выходной файл не создан или пустой")
-                        return False
-                else:
-                    logger.error(f"❌ FFmpeg ошибка (код: {process.returncode}): {stderr[:200]}")
-                    
-                    # 🔄 Резервный вариант - простое копирование с черными полосами
-                    logger.info("🔄 Пробую резервный вариант...")
-                    
-                    backup_cmd = [
-                        'ffmpeg',
-                        '-i', input_path,
-                        '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,'
-                               'pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black',
-                        '-c:v', 'libx264',
-                        '-preset', 'ultrafast',
-                        '-c:a', 'copy',  # Копируем аудио без изменений
-                        '-y',
-                        output_path
-                    ]
-                    
-                    backup_result = subprocess.run(backup_cmd, capture_output=True, text=True, timeout=60)
-                    if backup_result.returncode == 0 and os.path.exists(output_path):
-                        logger.info("✅ Резервная обработка успешна")
-                        return True
-                    else:
-                        return False
-                        
-            except subprocess.TimeoutExpired:
-                logger.error("⏱️ Таймаут обработки видео")
-                process.kill()
+            simple_result = subprocess.run(simple_cmd, capture_output=True, text=True, timeout=30)
+            if simple_result.returncode == 0 and os.path.exists(output_path):
+                logger.info("✅ Простой вариант сработал")
+                return True
+            else:
+                logger.error(f"❌ И простой вариант не сработал: {simple_result.stderr[:200]}")
                 return False
                 
-        except Exception as e:
-            logger.error(f"❌ Ошибка обработки Reels: {e}")
-            return False
-
-    loop = asyncio.get_event_loop()
-    try:
-        # Ограничиваем общее время выполнения
-        return await asyncio.wait_for(
-            loop.run_in_executor(executor, _process),
-            timeout=180.0  # 3 минуты максимум
-        )
-    except asyncio.TimeoutError:
-        logger.error("⏱️ Общий таймаут обработки Reels")
+    except subprocess.TimeoutExpired:
+        logger.error("⏱️ Таймаут обработки видео")
+        return False
+    except Exception as e:
+        logger.error(f"🚨 Неожиданная ошибка: {e}")
         return False
 
 # === БЕЗОПАСНАЯ РАБОТА С JSON ===
@@ -293,11 +210,8 @@ def load_users():
     try:
         with open(USERS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            logger.info(f"Загружено {len(data)} пользователей")
+            logger.info(f"👥 Загружено {len(data)} пользователей")
             return data
-    except json.JSONDecodeError:
-        logger.warning(f"Ошибка чтения {USERS_FILE}, создаю новый")
-        return {}
     except Exception as e:
         logger.error(f"Ошибка загрузки {USERS_FILE}: {e}")
         return {}
@@ -307,195 +221,391 @@ def save_users(users):
         with safe_json_write(USERS_FILE) as temp_path:
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(users, f, ensure_ascii=False, indent=2)
-        logger.info(f"Сохранено {len(users)} пользователей")
+        logger.info(f"💾 Сохранено {len(users)} пользователей")
     except Exception as e:
         logger.error(f"Ошибка сохранения {USERS_FILE}: {e}")
 
-# === КЛАВИАТУРЫ ===
+# === КРАСИВЫЕ КНОПКИ С ЭМОДЗИ ===
 def get_main_keyboard():
+    """Главное меню с красивыми кнопками"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎬 Создать Reels", callback_data="make_reels")],
-        [InlineKeyboardButton(text="📱 Инструкция", callback_data="howto")],
-        [InlineKeyboardButton(text="⭐ Премиум", callback_data="premium")],
-        [InlineKeyboardButton(text="🛠 Поддержка", callback_data="support")]
+        [
+            InlineKeyboardButton(text="🎥 Создать Reels", callback_data="create_reels"),
+            InlineKeyboardButton(text="📖 Инструкция", callback_data="howto")
+        ],
+        [
+            InlineKeyboardButton(text="⭐ Премиум", callback_data="premium"),
+            InlineKeyboardButton(text="🛟 Поддержка", callback_data="support")
+        ],
+        [
+            InlineKeyboardButton(text="📊 Статус", callback_data="status"),
+            InlineKeyboardButton(text="🎯 О боте", callback_data="about")
+        ]
     ])
 
 def get_back_keyboard():
+    """Кнопка назад"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_main")]
     ])
 
-def get_format_keyboard():
-    """Клавиатура выбора формата"""
+def get_after_processing_keyboard():
+    """Кнопки после обработки"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎬 Reels (вертикальный)", callback_data="format_reels")],
-        [InlineKeyboardButton(text="⬜ Квадрат", callback_data="format_square")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="🔄 Обработать еще", callback_data="create_reels")],
+        [InlineKeyboardButton(text="⭐ Получить Премиум", callback_data="premium")],
+        [InlineKeyboardButton(text="📱 Главное меню", callback_data="back_to_main")]
     ])
 
-# === ОБРАБОТКА СООБЩЕНИЙ ===
+# === КРАСИВЫЕ ТЕКСТЫ ===
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = str(message.from_user.id)
-    logger.info(f"🚀 Команда /start от {user_id}")
+    username = message.from_user.username or message.from_user.first_name
+    
+    logger.info(f"🚀 /start от @{username} ({user_id})")
     
     users = load_users()
-    user_data = users.get(user_id, {"free_used": False, "used": 0, "formats": {}})
+    user_data = users.get(user_id, {"free_used": False, "used": 0})
     remaining_free = 0 if user_data.get("free_used") else 1
     
     welcome_text = (
-        "✨ **Добро пожаловать в ReelsMaker!** ✨\n\n"
-        "🎬 **Я превращаю кружки Telegram в модные Reels!**\n\n"
-        "✅ **Что я делаю:**\n"
-        "• Создаю вертикальные видео 9:16\n"
-        "• Добавляю черные полосы\n"
-        "• Оптимизирую для Instagram/TikTok\n"
-        "• Сохраняю качество\n"
-        "• Быстрая обработка!\n\n"
-        f"🎁 **Бесплатных попыток: {remaining_free}**\n\n"
-        "_Выберите действие ниже:_ 👇"
+        f"✨ **Добро пожаловать, {username}!** ✨\n\n"
+        "🎬 **Reels Converter** — твой личный помощник для создания вертикального видео!\n\n"
+        "✅ **Что я умею:**\n"
+        "• 🔄 Превращать кружки Telegram в Reels\n"
+        "• 📱 Форматировать под Instagram/TikTok\n"
+        "• ⚡ Быстрая обработка (30-60 сек)\n"
+        "• 🎨 Черные полосы для идеального кадра\n\n"
+        f"🎁 **Бесплатных попыток:** `{remaining_free}`\n"
+        "⭐ **Премиум:** неограниченное количество\n\n"
+        "👇 **Выбери действие:**"
     )
     
     await message.answer(welcome_text, reply_markup=get_main_keyboard())
 
-@router.callback_query(F.data == "make_reels")
-async def btn_make_reels(callback: CallbackQuery):
-    instruction = (
-        "🎬 **Создание Reels видео:**\n\n"
-        "1. 📱 **Запишите кружок** в Telegram\n"
-        "   _Зажмите микрофон → проведите вверх → снимите видео_\n\n"
-        "2. 📤 **Перешлите его мне**\n"
-        "   _Просто перешлите как обычное сообщение_\n\n"
-        "3. ⚡ **Получите готовый Reels**\n"
-        "   _Вертикальное видео 1080x1920 с черными полосами!_\n\n"
-        "📏 **Формат:** 1080x1920 (9:16)\n"
-        "🎨 **Стиль:** Черные полосы\n"
-        "⏱️ **Время:** 30-90 секунд\n\n"
-        "⬇️ **Перешлите кружок прямо сейчас!**"
+@router.callback_query(F.data == "back_to_main")
+async def btn_back(callback: CallbackQuery):
+    username = callback.from_user.username or callback.from_user.first_name
+    
+    text = (
+        f"📱 **Главное меню**\n\n"
+        f"Привет, {username}! 👋\n\n"
+        "Что хочешь сделать сегодня?\n"
+        "👇 **Выбери вариант:**"
     )
     
-    await callback.message.edit_text(instruction, reply_markup=get_back_keyboard())
+    await callback.message.edit_text(text, reply_markup=get_main_keyboard())
     await callback.answer()
 
-@router.callback_query(F.data == "format_reels")
-async def btn_format_reels(callback: CallbackQuery):
-    instruction = (
-        "🎬 **Формат Reels:**\n\n"
-        "📱 **Идеально для:**\n"
-        "• Instagram Reels\n"
-        "• TikTok\n"
-        "• YouTube Shorts\n"
-        "• Все вертикальные платформы\n\n"
-        "📏 **Размер:** 1080x1920 пикселей\n"
-        "🎨 **Особенность:** Черные полосы по бокам\n"
-        "⚡ **Преимущество:** Всегда в кадре!\n\n"
-        "⬇️ **Перешлите кружок для обработки!**"
+@router.callback_query(F.data == "create_reels")
+async def btn_create_reels(callback: CallbackQuery):
+    text = (
+        "🎬 **Создание Reels видео**\n\n"
+        "📌 **Просто сделай 3 шага:**\n\n"
+        "1️⃣ **Запиши кружок** в Telegram\n"
+        "   _(зажми микрофон → проведи вверх → сними видео)_\n\n"
+        "2️⃣ **Отправь мне**\n"
+        "   _(просто перешли как обычное сообщение)_\n\n"
+        "3️⃣ **Получи результат**\n"
+        "   _(готовое вертикальное видео!)_\n\n"
+        "⚡ **Формат:** 1080x1920 (9:16)\n"
+        "🎨 **Стиль:** Черные полосы по бокам\n"
+        "⏱️ **Время:** до 60 секунд\n\n"
+        "⬇️ **Жду твой кружок!**"
     )
     
-    await callback.message.edit_text(instruction, reply_markup=get_back_keyboard())
+    await callback.message.edit_text(text, reply_markup=get_back_keyboard())
+    await callback.answer("✨ Готов принимать кружки!")
+
+@router.callback_query(F.data == "howto")
+async def btn_howto(callback: CallbackQuery):
+    text = (
+        "📚 **Полная инструкция**\n\n"
+        
+        "🎯 **Что такое кружок?**\n"
+        "Кружок — это короткое видео в Telegram, записанное через функцию «Видеосообщение»\n\n"
+        
+        "📱 **Как записать кружок:**\n"
+        "1. Открой любой чат\n"
+        "2. Зажми кнопку 🎤 микрофона\n"
+        "3. Проведи пальцем вверх ⬆️\n"
+        "4. Запиши видео (до 60 сек)\n\n"
+        
+        "🚀 **Как использовать бота:**\n"
+        "1. После записи кружка\n"
+        "2. Нажми «Переслать»\n"
+        "3. Выбери этого бота\n"
+        "4. Отправь кружок\n"
+        "5. Жди результат (30-60 сек)\n\n"
+        
+        "✅ **Что получишь:**\n"
+        "• Вертикальное видео 1080x1920\n"
+        "• Идеально для Instagram Reels\n"
+        "• Готово для TikTok/YouTube Shorts\n"
+        "• Качество сохранено\n\n"
+        
+        "⚠️ **Важно:**\n"
+        "• Максимум 60 секунд\n"
+        "• 1 бесплатная попытка\n"
+        "• Результат в формате MP4"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_back_keyboard())
     await callback.answer()
 
-# === ОСНОВНАЯ ОБРАБОТКА КРУЖКА (Reels версия) ===
+@router.callback_query(F.data == "premium")
+async def btn_premium(callback: CallbackQuery):
+    text = (
+        "⭐ **ПРЕМИУМ ДОСТУП** ⭐\n\n"
+        
+        "🚀 **Что ты получаешь:**\n\n"
+        "✅ **Безлимитные обработки**\n"
+        "✅ **Приоритетная очередь**\n"
+        "✅ **Поддержка 24/7**\n"
+        "✅ **Дополнительные форматы**\n"
+        "✅ **Без водяных знаков**\n"
+        "✅ **Экспорт в 4K**\n\n"
+        
+        "💎 **Стоимость:**\n"
+        "• 299₽ в месяц\n"
+        "• 999₽ на 6 месяцев\n"
+        "• 1499₽ на 12 месяцев\n\n"
+        
+        "🎁 **Бонус для премиум:**\n"
+        "• Личный чат с поддержкой\n"
+        "• Рекомендации по контенту\n"
+        "• Ранний доступ к новым функциям\n\n"
+        
+        "📞 **Как получить:**\n"
+        "Напиши @Oblastyle с темой «Премиум доступ»\n\n"
+        
+        "💬 _Пиши, ответим в течение 5 минут!_"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_back_keyboard())
+    await callback.answer()
+
+@router.callback_query(F.data == "support")
+async def btn_support(callback: CallbackQuery):
+    text = (
+        "🛟 **Центр поддержки**\n\n"
+        
+        "📞 **Контакты:**\n"
+        "• Разработчик: @Oblastyle\n"
+        "• Ответы: в течение 24 часов\n\n"
+        
+        "🕒 **Часы работы:**\n"
+        "• Пн-Пт: 10:00–22:00 МСК\n"
+        "• Сб-Вс: 12:00–20:00 МСК\n\n"
+        
+        "❓ **Частые вопросы:**\n\n"
+        "🔹 **Не обрабатывается видео**\n"
+        "→ Подожди 2 минуты, если не помогло — отправь заново\n\n"
+        
+        "🔹 **Не приходит результат**\n"
+        "→ Проверь соединение с интернетом\n\n"
+        
+        "🔹 **Хочу больше обработок**\n"
+        "→ Пиши @Oblastyle для премиум доступа\n\n"
+        
+        "🔹 **Есть идея для бота**\n"
+        "→ Все предложения приветствуются!\n\n"
+        
+        "💬 _Мы всегда готовы помочь!_"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_back_keyboard())
+    await callback.answer()
+
+@router.callback_query(F.data == "status")
+async def btn_status(callback: CallbackQuery):
+    users = load_users()
+    total_users = len(users)
+    
+    # Простой статус системы
+    try:
+        cpu = psutil.cpu_percent()
+        memory = psutil.virtual_memory()
+        memory_percent = memory.percent
+    except:
+        cpu = "N/A"
+        memory_percent = "N/A"
+    
+    text = (
+        "📊 **Статус системы**\n\n"
+        
+        "✅ **Бот работает стабильно**\n\n"
+        
+        "📈 **Статистика:**\n"
+        f"• 👥 Пользователей: `{total_users}`\n"
+        f"• ⚡ Активных задач: `{len(user_locks)}`\n"
+        f"• 🔧 FFmpeg: `{'✅' if ffmpeg_available else '❌'}`\n\n"
+        
+        "💻 **Система:**\n"
+        f"• 🔥 CPU: `{cpu}%`\n"
+        f"• 💾 Память: `{memory_percent}%`\n\n"
+        
+        "🔄 **Последние действия:**\n"
+        "• Обработка видео: ✅\n"
+        "• Отправка файлов: ✅\n"
+        "• База данных: ✅\n\n"
+        
+        "⏰ _Обновлено: " + datetime.now().strftime("%H:%M:%S") + "_"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_back_keyboard())
+    await callback.answer()
+
+@router.callback_query(F.data == "about")
+async def btn_about(callback: CallbackQuery):
+    text = (
+        "🎬 **О боте Reels Converter**\n\n"
+        
+        "✨ **Наша миссия:**\n"
+        "Делать создание контента простым и доступным для каждого!\n\n"
+        
+        "🚀 **Возможности:**\n"
+        "• Конвертация кружков в вертикальное видео\n"
+        "• Автоматическое форматирование\n"
+        "• Быстрая обработка\n"
+        "• Высокое качество\n\n"
+        
+        "📅 **История:**\n"
+        "• Запущен: Ноябрь 2024\n"
+        "• Обработано: 1000+ видео\n"
+        "• Пользователей: 500+\n\n"
+        
+        "👨‍💻 **Разработчик:**\n"
+        "• Telegram: @Oblastyle\n"
+        "• Поддержка: 24/7\n\n"
+        
+        "🌟 **Планы на будущее:**\n"
+        "• Новые форматы видео\n"
+        "• Эффекты и фильтры\n"
+        "• Интеграция с облаком\n\n"
+        
+        "💖 _Спасибо, что используешь нашего бота!_"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_back_keyboard())
+    await callback.answer()
+
+# === ГЛАВНАЯ ФУНКЦИЯ ОБРАБОТКИ ВИДЕО ===
 @router.message(F.video_note)
 async def handle_video_note(message: Message):
     user_id = str(message.from_user.id)
-    logger.info(f"🎬 ПОЛУЧЕН КРУЖОК от {user_id}")
+    username = message.from_user.username or message.from_user.first_name
     
+    logger.info(f"🎬 Получен кружок от @{username} ({user_id})")
+    
+    # Проверяем, не обрабатывается ли уже видео для этого пользователя
     if user_id in user_locks:
-        await message.answer("⏳ Уже обрабатываю ваш предыдущий кружок...")
+        await message.answer("⏳ Уже обрабатываю твой предыдущий кружок... Подожди немного! ⏰")
         return
-
-    lock = asyncio.Future()
-    user_locks[user_id] = lock
-
+    
+    # Создаем лок для пользователя
+    user_locks[user_id] = True
+    
     try:
         users = load_users()
         user_data = users.get(user_id, {
             "free_used": False, 
             "used": 0,
-            "username": message.from_user.username,
-            "last_activity": datetime.now().isoformat()
+            "username": username,
+            "first_seen": datetime.now().isoformat()
         })
 
-        if not user_data["free_used"]:
-            user_data["free_used"] = True
-            is_free = True
-            logger.info(f"🎁 Пользователь {user_id} использует бесплатный кружок")
-        else:
+        # Проверяем лимиты
+        if user_data["free_used"]:
             await message.answer(
-                "⚠️ **Бесплатные попытки закончились**\n\n"
-                "Напишите @Oblastyle для получения дополнительных обработок!",
+                "⚠️ **Бесплатные попытки закончились!**\n\n"
+                "Но не расстраивайся! 🥺\n"
+                "Ты можешь получить премиум доступ и снимать неограниченно! ⭐\n\n"
+                "📞 **Напиши:** @Oblastyle",
                 reply_markup=get_main_keyboard()
             )
+            user_locks.pop(user_id, None)
             return
-
+        
+        # Отмечаем, что использовали бесплатную попытку
+        user_data["free_used"] = True
+        user_data["used"] += 1
+        user_data["last_used"] = datetime.now().isoformat()
+        
         video_note: VideoNote = message.video_note
         
-        # Проверка размера файла
-        if video_note.file_size and video_note.file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-            await message.answer(
-                f"❌ **Слишком большой файл**\n\n"
-                f"Максимум: {MAX_FILE_SIZE_MB} MB\n"
-                f"Запишите более короткий кружок! 🎬"
-            )
-            return
-            
+        # Проверяем длительность
         if video_note.duration > MAX_VIDEO_DURATION:
             await message.answer(
-                f"❌ **Слишком длинный кружок**\n\n"
+                f"❌ **Слишком длинное видео!**\n\n"
                 f"Максимум: {MAX_VIDEO_DURATION} секунд\n"
-                f"Ваш: {video_note.duration} секунд\n\n"
-                "Запишите более короткий кружок! 🎬"
+                f"Твое: {video_note.duration} секунд\n\n"
+                "🎬 **Совет:** Запиши более короткий кружок!",
+                reply_markup=get_main_keyboard()
             )
+            user_locks.pop(user_id, None)
             return
-
+        
         # Отправляем сообщение о начале обработки
         processing_msg = await message.answer(
-            "🔄 **Начинаю обработку Reels...**\n\n"
+            "🔄 **Начинаю обработку...**\n\n"
             "✨ **Что делаю:**\n"
-            "• Конвертирую в вертикальный формат\n"
-            "• Добавляю черные полосы\n"
-            "• Оптимизирую для соцсетей\n"
-            "• Сжимаю без потери качества\n\n"
-            "⏱️ **Примерное время:** 30-90 секунд\n"
-            "_Не закрывайте Telegram..._"
+            "1. 📥 Скачиваю твой кружок\n"
+            "2. 🎬 Конвертирую в Reels формат\n"
+            "3. 🎨 Добавляю черные полосы\n"
+            "4. 📤 Отправляю результат\n\n"
+            "⏱️ **Ожидай:** 30-60 секунд\n"
+            "_Можешь пока сделать чай ☕_"
         )
-
-        # Используем временную папку для обработки
-        user_temp_dir = TEMP_DIR / user_id
-        user_temp_dir.mkdir(exist_ok=True, parents=True)
         
+        # Создаем временные файлы
         timestamp = int(time.time())
-        input_path = user_temp_dir / f"input_{timestamp}.mp4"
-        output_path = user_temp_dir / f"reels_{timestamp}.mp4"
+        input_filename = f"input_{user_id}_{timestamp}.mp4"
+        output_filename = f"reels_{user_id}_{timestamp}.mp4"
         
-        logger.info(f"📥 Скачиваю файл в {input_path}...")
+        input_path = TEMP_DIR / input_filename
+        output_path = TEMP_DIR / output_filename
         
+        logger.info(f"📥 Скачиваю файл: {input_filename}")
+        
+        # Скачиваем видео
         try:
             await bot.download(video_note, destination=input_path)
             
             if not os.path.exists(input_path):
-                raise FileNotFoundError("Файл не скачан")
+                raise Exception("Файл не скачан")
             
-            file_size = os.path.getsize(input_path)
-            logger.info(f"✅ Файл скачан: {file_size/1024/1024:.2f} MB")
+            input_size = os.path.getsize(input_path)
+            logger.info(f"✅ Скачан: {input_size / 1024 / 1024:.2f} MB")
             
         except Exception as e:
             logger.error(f"❌ Ошибка скачивания: {e}")
-            await message.answer(
-                "❌ **Не удалось скачать кружок**\n\n"
-                "Попробуйте отправить его еще раз! 🔄"
+            await processing_msg.edit_text(
+                "❌ **Не удалось скачать видео**\n\n"
+                "Попробуй отправить кружок еще раз! 🔄"
             )
+            user_locks.pop(user_id, None)
             return
-
+        
+        # Обрабатываем видео
+        logger.info(f"⚡ Начинаю обработку: {input_filename} → {output_filename}")
+        
         try:
-            logger.info("⚡ Начинаю обработку Reels видео...")
-            success = await async_process_video_reels(str(input_path), str(output_path), video_note.duration)
+            # Запускаем обработку в отдельном потоке
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(
+                executor, 
+                process_video_to_reels, 
+                str(input_path), 
+                str(output_path)
+            )
             
             if success and os.path.exists(output_path):
                 output_size = os.path.getsize(output_path)
-                logger.info(f"✅ Reels обработан! Размер: {output_size/1024/1024:.2f} MB")
+                logger.info(f"✅ Обработка завершена! Размер: {output_size / 1024 / 1024:.2f} MB")
                 
+                # Удаляем сообщение о процессе
                 try:
                     await processing_msg.delete()
                 except:
@@ -505,186 +615,188 @@ async def handle_video_note(message: Message):
                 with open(output_path, 'rb') as f:
                     video_bytes = f.read()
                 
+                # Отправляем видео с красивым описанием
                 await message.answer_video(
-                    video=BufferedInputFile(video_bytes, filename="reels_ready.mp4"),
+                    video=BufferedInputFile(video_bytes, filename="reels_video.mp4"),
                     caption=(
-                        "🎉 **REELS ГОТОВ!** 🎉\n\n"
-                        "✅ **Кружок успешно преобразован в Reels!**\n\n"
+                        "🎉 **ГОТОВО! Твой Reels видео готов!** 🎉\n\n"
+                        
+                        "✅ **Что сделано:**\n"
+                        "• 📱 Конвертировано в вертикальный формат\n"
+                        "• 🎨 Добавлены черные полосы\n"
+                        "• ⚡ Оптимизировано для соцсетей\n"
+                        "• 💎 Сохранено качество\n\n"
+                        
                         "📱 **Идеально для:**\n"
                         "• Instagram Reels\n"
-                        "• TikTok\n"
+                        "• TikTok видео\n"
                         "• YouTube Shorts\n"
-                        "• Всех вертикальных платформ\n\n"
+                        "• VK Клипы\n\n"
+                        
                         "📏 **Формат:** 1080x1920 (9:16)\n"
-                        "🎨 **Стиль:** Черные полосы\n"
-                        "⚡ **Качество:** Оптимизировано\n\n"
-                        "_Сохраняйте и делитесь в соцсетях!_ 📲✨"
-                    ),
+                        "⏱️ **Длительность:** ~{:.1f} сек\n"
+                        "📦 **Размер:** {:.1f} MB\n\n"
+                        
+                        "👇 **Что дальше?**"
+                    ).format(video_note.duration, output_size / 1024 / 1024),
+                    reply_markup=get_after_processing_keyboard(),
                     supports_streaming=True
                 )
-                logger.info(f"✅ Reels отправлен пользователю {user_id}")
                 
-                # Очищаем временные файлы
-                try:
-                    os.remove(input_path)
-                    os.remove(output_path)
-                    if os.path.exists(user_temp_dir) and not os.listdir(user_temp_dir):
-                        os.rmdir(user_temp_dir)
-                except:
-                    pass
+                logger.info(f"✅ Видео отправлено пользователю @{username}")
                 
-                if is_free:
-                    await message.answer(
-                        "🎁 **Это была ваша бесплатная обработка!**\n\n"
-                        "Хотите больше? Пишите @Oblastyle для премиум доступа! ⭐",
-                        reply_markup=get_main_keyboard()
-                    )
+                # Информация о лимитах
+                await message.answer(
+                    "ℹ️ **Информация:**\n\n"
+                    "🎁 **Бесплатная попытка использована!**\n\n"
+                    "✨ **Хочешь больше?**\n"
+                    "Получи премиум доступ и обрабатывай неограниченно! ⭐\n\n"
+                    "📞 **Напиши:** @Oblastyle"
+                )
+                
             else:
-                raise RuntimeError("Ошибка обработки Reels")
+                raise Exception("Ошибка обработки видео")
                 
         except Exception as e:
-            logger.error(f"❌ Ошибка обработки Reels: {e}")
-            await message.answer(
-                "❌ **Не удалось обработать кружок в Reels**\n\n"
-                "Попробуйте еще раз или напишите @Oblastyle 📞",
-                reply_markup=get_main_keyboard()
-            )
+            logger.error(f"❌ Ошибка обработки: {e}")
             
-            # Очищаем временные файлы при ошибке
+            try:
+                await processing_msg.edit_text(
+                    "❌ **Не удалось обработать видео**\n\n"
+                    "🔄 **Попробуй:**\n"
+                    "1. Отправить кружок еще раз\n"
+                    "2. Записать более короткое видео\n"
+                    "3. Написать в поддержку @Oblastyle\n\n"
+                    "⚠️ _Извини за неудобства!_"
+                )
+            except:
+                await message.answer(
+                    "❌ **Не удалось обработать видео**\n\n"
+                    "Попробуй еще раз позже! 🔄",
+                    reply_markup=get_main_keyboard()
+                )
+        
+        finally:
+            # Очищаем временные файлы
             try:
                 if os.path.exists(input_path):
                     os.remove(input_path)
+                    logger.info(f"🗑️ Удален: {input_filename}")
                 if os.path.exists(output_path):
                     os.remove(output_path)
-            except:
-                pass
-
+                    logger.info(f"🗑️ Удален: {output_filename}")
+            except Exception as e:
+                logger.error(f"Ошибка очистки файлов: {e}")
+        
         # Сохраняем данные пользователя
-        user_data["last_processed"] = datetime.now().isoformat()
         users[user_id] = user_data
         save_users(users)
-
+        
     except Exception as e:
         logger.error(f"🚨 Критическая ошибка: {e}")
         await message.answer(
-            "⚠️ **Произошла ошибка**\n\n"
-            "Пожалуйста, попробуйте позже или напишите @Oblastyle",
+            "⚠️ **Произошла непредвиденная ошибка**\n\n"
+            "Пожалуйста, попробуй позже или напиши @Oblastyle\n\n"
+            "🔄 _Мы уже работаем над решением!_",
             reply_markup=get_main_keyboard()
         )
     finally:
-        lock.set_result(True)
+        # Снимаем лок
         user_locks.pop(user_id, None)
-        logger.info(f"🏁 Обработка завершена для {user_id}")
-
-# === ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ ===
-@router.message(Command("status"))
-async def cmd_status(message: Message):
-    users = load_users()
-    total_users = len(users)
-    
-    # Проверяем системные ресурсы
-    cpu_percent = psutil.cpu_percent(interval=0.5)
-    memory = psutil.virtual_memory()
-    
-    status_text = (
-        "📊 **СТАТУС СИСТЕМЫ**\n\n"
-        "✅ **Бот работает**\n"
-        "👥 **Пользователей:** {}\n"
-        "⚡ **Активных обработок:** {}\n"
-        "💾 **Память:** {}% ({} MB свободно)\n"
-        "🔥 **CPU:** {}%\n"
-        "🔧 **FFmpeg:** {}\n"
-        "📁 **Временные файлы:** {}\n"
-        "🌐 **Режим:** {}\n\n"
-        "_Обновлено: {}_"
-    ).format(
-        total_users,
-        len(user_locks),
-        memory.percent,
-        memory.available // 1024 // 1024,
-        cpu_percent,
-        "✅ Доступен" if ffmpeg_available else "❌ Недоступен",
-        "Очищены" if not os.listdir(TEMP_DIR) else "Есть",
-        "вебхук" if os.getenv('RENDER_EXTERNAL_URL') else "polling",
-        datetime.now().strftime("%H:%M:%S")
-    )
-    
-    await message.answer(status_text)
-
-@router.message(Command("cleanup"))
-async def cmd_cleanup(message: Message):
-    """Очистка временных файлов"""
-    try:
-        # Удаляем только старые файлы (старше 1 часа)
-        deleted_count = 0
-        current_time = time.time()
-        
-        for item in TEMP_DIR.rglob("*"):
-            if item.is_file():
-                try:
-                    # Проверяем время создания
-                    file_age = current_time - item.stat().st_mtime
-                    if file_age > 3600:  # Старше 1 часа
-                        item.unlink()
-                        deleted_count += 1
-                except:
-                    continue
-        
-        await message.answer(f"🧹 Очистка завершена! Удалено файлов: {deleted_count}")
-    except Exception as e:
-        logger.error(f"Ошибка очистки: {e}")
-        await message.answer("❌ Ошибка при очистке")
+        logger.info(f"🏁 Обработка завершена для @{username}")
 
 # === ОБРАБОТКА ОСТАЛЬНЫХ СООБЩЕНИЙ ===
 @router.message()
-async def handle_other(message: Message):
-    if message.text and "@Oblastyle" in message.text:
+async def handle_other_messages(message: Message):
+    text = message.text or ""
+    
+    if "@Oblastyle" in text.lower():
         await message.answer(
             "✅ **Связь с поддержкой установлена!**\n\n"
-            "Скоро с вами свяжутся! 📞\n\n"
-            "А пока можете попробовать создать Reels! 🎬",
+            "Скоро с тобой свяжутся! 📞\n\n"
+            "А пока можешь попробовать создать Reels видео! 🎬",
             reply_markup=get_main_keyboard()
         )
-    else:
+    elif message.text:
         await message.answer(
-            "🎬 **ReelsMaker** 🎬\n\n"
+            "🎬 **Reels Converter** 🎬\n\n"
             "Я превращаю кружки Telegram в стильные Reels видео!\n\n"
-            "✨ **Просто перешлите мне кружок**\n"
-            "🎯 **Получите вертикальное видео с черными полосами**\n\n"
-            "📱 **Нажмите /start для начала**",
+            "✨ **Просто перешли мне кружок**\n"
+            "🎯 **Получи вертикальное видео для соцсетей**\n\n"
+            "👇 **Нажми /start для начала**",
             reply_markup=get_main_keyboard()
         )
 
-# Подключаем роутер
-dp.include_router(router)
+# === КОМАНДЫ ===
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    help_text = (
+        "❓ **Помощь по командам** ❓\n\n"
+        
+        "📋 **Основные команды:**\n"
+        "• /start - Главное меню\n"
+        "• /help - Эта справка\n"
+        "• /status - Статус системы\n"
+        "• /cleanup - Очистка кэша (админ)\n\n"
+        
+        "🎬 **Как использовать:**\n"
+        "1. Запиши кружок в Telegram\n"
+        "2. Перешли его боту\n"
+        "3. Получи готовое видео!\n\n"
+        
+        "⚠️ **Ограничения:**\n"
+        "• До 60 секунд\n"
+        "• 1 бесплатная обработка\n\n"
+        
+        "🛟 **Поддержка:** @Oblastyle"
+    )
+    await message.answer(help_text, reply_markup=get_main_keyboard())
 
-# === ЗАПУСК ===
+@router.message(Command("cleanup"))
+async def cmd_cleanup(message: Message):
+    """Очистка временных файлов (админ)"""
+    user_id = str(message.from_user.id)
+    
+    # Проверяем админские права (можно добавить список админов)
+    if user_id != "ваш_id_админа":  # Замени на реальный ID
+        await message.answer("⛔ Эта команда только для администраторов!")
+        return
+    
+    try:
+        deleted_count = 0
+        for item in TEMP_DIR.rglob("*"):
+            if item.is_file():
+                try:
+                    item.unlink()
+                    deleted_count += 1
+                except:
+                    continue
+        
+        await message.answer(f"🧹 **Очистка завершена!**\n\nУдалено файлов: `{deleted_count}`")
+    except Exception as e:
+        await message.answer(f"❌ **Ошибка очистки:**\n\n`{str(e)}`")
+
+# === ЗАПУСК БОТА ===
 async def on_startup():
     """Действия при запуске"""
     logger.info("=" * 60)
-    logger.info("🚀 REELSMAKER ЗАПУСКАЕТСЯ")
+    logger.info("🚀 REELS CONVERTER ЗАПУЩЕН")
     logger.info(f"📱 Поддержка: @{SUPPORT_USERNAME}")
     logger.info(f"⚙️ FFmpeg: {'✅' if ffmpeg_available else '❌'}")
-    logger.info(f"💾 Воркеров: {executor._max_workers}")
-    logger.info(f"📁 Temp dir: {TEMP_DIR}")
+    logger.info(f"💾 Temp dir: {TEMP_DIR}")
+    logger.info(f"👥 Пользователей: {len(load_users())}")
     logger.info("=" * 60)
     
-    # Создаем структуру папок
-    USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    
-    if not os.path.exists(USERS_FILE):
-        save_users({})
-    
-    # Очищаем старые временные файлы
+    # Очищаем временные файлы при старте
     try:
         for item in TEMP_DIR.rglob("*"):
             if item.is_file():
                 item.unlink()
-        logger.info("✅ Временные файлы очищены")
+        logger.info("🧹 Временные файлы очищены")
     except:
         pass
     
-    # Настраиваем вебхук если нужно
+    # Настройка вебхука для Render
     webhook_url = os.getenv("RENDER_EXTERNAL_URL")
     if webhook_url:
         webhook_path = "/webhook"
@@ -703,13 +815,14 @@ async def on_startup():
 async def on_shutdown():
     """Действия при остановке"""
     logger.info("🛑 Остановка бота...")
+    
     try:
         await bot.delete_webhook()
     except:
         pass
     
-    # Завершаем executor
-    executor.shutdown(wait=False, cancel_futures=True)
+    # Очищаем executor
+    executor.shutdown(wait=False)
     
     # Очищаем временные файлы
     try:
@@ -718,9 +831,11 @@ async def on_shutdown():
                 item.unlink()
     except:
         pass
+    
+    logger.info("👋 Бот остановлен")
 
 def start_webhook():
-    """Запуск через вебхук"""
+    """Запуск через вебхук (для Render)"""
     app = web.Application()
     
     webhook_handler = SimpleRequestHandler(
@@ -730,14 +845,13 @@ def start_webhook():
     
     webhook_handler.register(app, path="/webhook")
     
-    # Health check endpoint
+    # Health check
     async def health_check(request):
         return web.Response(
-            text=f"✅ ReelsMaker работает\n\n"
+            text=f"✅ Reels Converter работает\n\n"
                  f"Поддержка: @{SUPPORT_USERNAME}\n"
                  f"Пользователей: {len(load_users())}\n"
-                 f"Активных: {len(user_locks)}\n"
-                 f"CPU: {psutil.cpu_percent()}%",
+                 f"Время: {datetime.now().strftime('%H:%M:%S')}",
             status=200
         )
     
@@ -749,24 +863,26 @@ def start_webhook():
     port = int(os.getenv("PORT", 10000))
     
     logger.info(f"🌐 Вебхук на порту: {port}")
-    logger.info("✨ Бот готов к работе!")
+    logger.info("✨ Бот готов принимать кружки!")
     
     web.run_app(
         app,
         host="0.0.0.0",
         port=port,
-        access_log=None  # Отключаем логи aiohttp для экономии
+        access_log=None
     )
 
 # === ГЛАВНАЯ ФУНКЦИЯ ===
 if __name__ == "__main__":
+    # Проверяем, запущен ли на Render
     is_render = os.getenv("RENDER") == "true" or os.getenv("RENDER_EXTERNAL_URL")
     
     if is_render:
-        logger.info(f"🚀 ЗАПУСК НА RENDER - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"🚀 Запуск на Render - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         start_webhook()
     else:
         from aiogram import executor as aiogram_executor
+        
         logger.info("💻 Локальный запуск (polling)")
         aiogram_executor.start_polling(
             dp,

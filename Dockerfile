@@ -1,10 +1,12 @@
 FROM python:3.10-slim
 
-# ВСЁ в одном RUN слое!
+# 1. Сначала проверяем/создаем sources.list
+RUN test -f /etc/apt/sources.list || echo "deb http://deb.debian.org/debian trixie main" > /etc/apt/sources.list && \
+    echo "deb http://deb.debian.org/debian trixie-updates main" >> /etc/apt/sources.list && \
+    echo "deb http://security.debian.org/debian-security trixie-security main" >> /etc/apt/sources.list
+
+# 2. Обновляем и устанавливаем пакеты
 RUN apt-get update && \
-    sed -i 's|deb.debian.org|mirror.yandex.ru|g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org|mirror.yandex.ru/debian-security|g' /etc/apt/sources.list && \
-    apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
     libsm6 \

@@ -8,9 +8,6 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Отключаем health check на уровне Docker
-HEALTHCHECK NONE
-
 WORKDIR /app
 
 # Копируем зависимости

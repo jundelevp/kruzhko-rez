@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Video Circle to Reels Converter Bot
-Преобразует видео-кружочки Telegram в вертикальные видео Reels/TikTok формата
-с черным фоном и высоким качеством.
+ОПТИМИЗИРОВАН ДЛЯ TIMEWEB (2 ГБ ОЗУ, 3.3 ГГц)
 """
 
 import os
@@ -10,6 +9,7 @@ import sys
 import logging
 import gc
 import asyncio
+import resource
 from pathlib import Path
 from typing import Optional
 import subprocess
@@ -23,34 +23,49 @@ import moviepy.editor as mp
 from moviepy.video.fx.all import resize
 import psutil
 
-# --- КОНФИГУРАЦИЯ ---
+# --- TIMEWEB КОНФИГУРАЦИЯ ---
 BOT_TOKEN = "8535285877:AAFkJEwV18KFCnEJPAyTR2AsSsgvQbTA6fg"
 
-# Лимиты для Timeweb (2 ГБ ОЗУ)
-MAX_VIDEO_SIZE = 50 * 1024 * 1024  # 50 MB
-MAX_VIDEO_DURATION = 60  # Макс. длительность кружка
-OUTPUT_DURATION_LIMIT = 90  # Макс. длительность результата
+# 1. ПАМЯТЬ (2 ГБ ОЗУ)
+MEMORY_LIMIT_MB = 1800  # Оставляем 200 МБ для системы
+MAX_VIDEO_SIZE = 40 * 1024 * 1024  # 40 MB
+MAX_VIDEO_DURATION = 45  # 45 секунд максимум
+MAX_CACHE_SIZE_MB = 100  # Макс. размер кэша
 
-# Настройки выходного видео (Reels/TikTok формат)
-OUTPUT_WIDTH = 1080  # Full HD вертикальное
-OUTPUT_HEIGHT = 1920
+# 2. CPU (3.3 ГГц, 1-2 ядра на Timeweb)
+FFMPEG_THREADS = 2  # Оптимально для 2 ядер
+CPU_LIMIT = 1.5  # Ограничение использования CPU (ядра)
+
+# 3. КАЧЕСТВО ВЫХОДНОГО ВИДЕО (оптимизировано)
+OUTPUT_WIDTH = 720   # HD (быстрее чем 1080)
+OUTPUT_HEIGHT = 1280 # Вертикальное 9:16
 OUTPUT_FPS = 30
-OUTPUT_CODEC = 'libx264'
-OUTPUT_PRESET = 'medium'
-OUTPUT_BITRATE = '5M'  # Высокое качество
+OUTPUT_PRESET = 'ultrafast'  # Самый быстрый пресет
+OUTPUT_CRF = 23  # Хороший баланс качество/размер
+OUTPUT_BITRATE = '2M'  # Умеренный битрейт
 
-# Пути
-TEMP_DIR = Path("video_temp")
-TEMP_DIR.mkdir(exist_ok=True)
+# 4. ПУТИ И ДИРЕКТОРИИ
+TEMP_DIR = Path("/tmp/video_bot")  # Используем /tmp (быстрее на Timeweb)
+TEMP_DIR.mkdir(exist_ok=True, parents=True)
 
-# Оптимизация памяти
+# 5. ОПТИМИЗАЦИЯ ПАМЯТИ PYTHON
 gc.enable()
-gc.set_threshold(700, 10, 10)
+gc.set_threshold(500, 5, 5)  # Агрессивный сбор мусора
 
-# --- ЛОГГИРОВАНИЕ ---
+# Ограничение памяти процесса (только для Linux)
+if sys.platform == "linux":
+    try:
+        # Устанавливаем мягкий лимит в 1.8 ГБ
+        soft_limit = MEMORY_LIMIT_MB * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (soft_limit, resource.RLIM_INFINITY))
+    except:
+        pass
+
+# --- ЛОГГИРОВАНИЕ (оптимизировано) ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S',
     handlers=[
         logging.FileHandler('bot.log', encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
@@ -59,350 +74,376 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- ИНИЦИАЛИЗАЦИЯ БОТА ---
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(
+    token=BOT_TOKEN,
+    parse_mode=ParseMode.HTML
+)
 dp = Dispatcher()
-router = Router()
-dp.include_router(router)
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# Семафор для ограничения одновременных конвертаций
+conversion_semaphore = asyncio.Semaphore(1)  # Только 1 одновременно
+
+# --- ОПТИМИЗИРОВАННЫЕ ФУНКЦИИ ДЛЯ TIMEWEB ---
+
+def check_memory_usage() -> bool:
+    """Проверяет, достаточно ли памяти для обработки"""
+    process = psutil.Process()
+    memory = process.memory_info().rss / 1024 / 1024  # MB
+    
+    if memory > MEMORY_LIMIT_MB * 0.8:  # Если используется >80%
+        logger.warning(f"Мало памяти: {memory:.1f} MB из {MEMORY_LIMIT_MB} MB")
+        return False
+    return True
 
 async def cleanup_temp_files():
-    """Очистка временных файлов"""
+    """Умная очистка временных файлов"""
     try:
         deleted = 0
-        for file in TEMP_DIR.glob("*"):
-            try:
-                if file.is_file():
+        total_size = 0
+        
+        # Получаем список файлов отсортированный по времени
+        files = sorted(TEMP_DIR.glob("*"), key=lambda x: x.stat().st_mtime)
+        
+        # Удаляем старые файлы если кэш больше лимита
+        cache_size_mb = sum(f.stat().st_size for f in files) / 1024 / 1024
+        
+        if cache_size_mb > MAX_CACHE_SIZE_MB:
+            # Удаляем 50% самых старых файлов
+            files_to_delete = files[:len(files)//2]
+            for file in files_to_delete:
+                try:
+                    total_size += file.stat().st_size
                     file.unlink()
                     deleted += 1
-            except:
-                continue
+                except:
+                    continue
+            
+            logger.info(f"Очищен кэш: {deleted} файлов, {total_size/1024/1024:.1f} MB")
+        
         return deleted
+        
     except Exception as e:
         logger.error(f"Ошибка очистки: {e}")
         return 0
 
-def create_reels_video(input_path: Path, user_id: int) -> Optional[Path]:
+def create_reels_video_timeweb(input_path: Path, user_id: int) -> Optional[Path]:
     """
-    Основная функция конвертации кружка в Reels видео
-    с черным фоном и высоким качеством
+    Оптимизированная конвертация для Timeweb
     """
-    output_path = TEMP_DIR / f"reels_{user_id}_{int(asyncio.get_event_loop().time())}.mp4"
+    output_path = TEMP_DIR / f"reels_{user_id}.mp4"
     
     try:
-        logger.info(f"Начинаю конвертацию: {input_path.name}")
+        if not check_memory_usage():
+            logger.error("Недостаточно памяти для обработки")
+            return None
         
-        # Загружаем видео с оптимизацией памяти
-        video = mp.VideoFileClip(str(input_path), audio=True)
+        logger.info(f"Конвертация: {input_path.name}")
         
-        # Проверяем длительность
+        # 1. Загружаем видео с оптимизацией
+        video = mp.VideoFileClip(
+            str(input_path),
+            audio=True,
+            target_resolution=(480, 480)  # Загружаем в меньшем разрешении
+        )
+        
+        # 2. Проверяем длительность
         if video.duration > MAX_VIDEO_DURATION:
-            logger.warning(f"Видео слишком длинное: {video.duration:.1f} сек")
+            logger.warning(f"Слишком длинное видео: {video.duration:.1f}с")
             video.close()
             return None
         
-        # Получаем размер оригинального видео (круг)
+        # 3. Оптимизированная обработка для Timeweb
+        # Уменьшаем разрешение если нужно
+        target_height = OUTPUT_HEIGHT
         original_size = video.size
-        logger.info(f"Оригинальный размер: {original_size}")
-        
-        # Вычисляем параметры для вертикального видео
-        # Определяем размер круга (квадрат)
         circle_size = min(original_size)
         
-        # Обрезаем до квадрата (центрируем круг)
-        x_center = original_size[0] // 2
-        y_center = original_size[1] // 2
-        half_size = circle_size // 2
-        
-        # Обрезаем видео до квадрата
-        cropped = video.crop(
-            x1=x_center - half_size,
-            y1=y_center - half_size,
-            x2=x_center + half_size,
-            y2=y_center + half_size
-        )
-        
-        # Создаем черный фон (вертикальное видео)
-        # Вычисляем масштаб для заполнения высоты
-        target_height = OUTPUT_HEIGHT
+        # Масштабируем
         scale_factor = target_height / circle_size
+        if scale_factor > 3:  # Если увеличение слишком большое
+            scale_factor = 2  # Ограничиваем
         
-        # Увеличиваем круг для заполнения высоты
-        scaled = cropped.resize(scale_factor)
-        
-        # Создаем черный фон нужного размера
+        # Создаем черный фон
         from moviepy.video.VideoClip import ColorClip
         background = ColorClip(
             size=(OUTPUT_WIDTH, OUTPUT_HEIGHT),
-            color=(0, 0, 0),  # Черный цвет
+            color=(0, 0, 0),
             duration=video.duration
+        ).set_fps(OUTPUT_FPS)
+        
+        # Подготовка круга
+        cropped = video.crop(
+            x_center=original_size[0]//2,
+            y_center=original_size[1]//2,
+            width=circle_size,
+            height=circle_size
         )
         
-        # Центрируем увеличенный круг на черном фоне
+        scaled = cropped.resize(scale_factor)
+        
+        # Позиционируем по центру
         x_pos = (OUTPUT_WIDTH - scaled.w) // 2
         y_pos = (OUTPUT_HEIGHT - scaled.h) // 2
         
-        # Накладываем видео на фон
+        # 4. Композиция с оптимизацией памяти
         final_video = mp.CompositeVideoClip(
-            [background, scaled.set_position((x_pos, y_pos))]
-        )
+            [background, scaled.set_position((x_pos, y_pos))],
+            size=(OUTPUT_WIDTH, OUTPUT_HEIGHT),
+            use_bgclip=True
+        ).set_duration(video.duration)
         
-        # Устанавливаем длительность и FPS
-        final_video = final_video.set_duration(video.duration)
-        final_video = final_video.set_fps(OUTPUT_FPS)
-        
-        # Добавляем аудио
         if video.audio:
             final_video = final_video.set_audio(video.audio)
         
-        # Экспортируем с высоким качеством
-        logger.info(f"Экспортирую видео: {output_path}")
+        # 5. Экспорт с Timeweb оптимизациями
+        logger.info("Экспорт видео...")
         
-        # Используем FFmpeg для лучшего качества
+        # Параметры FFmpeg для Timeweb
+        ffmpeg_params = [
+            '-threads', str(FFMPEG_THREADS),
+            '-preset', OUTPUT_PRESET,
+            '-crf', str(OUTPUT_CRF),
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+            '-max_muxing_queue_size', '9999',
+            '-bufsize', '2000k'  # Буфер для стабильности
+        ]
+        
         final_video.write_videofile(
             str(output_path),
-            codec=OUTPUT_CODEC,
-            preset=OUTPUT_PRESET,
-            bitrate=OUTPUT_BITRATE,
+            codec='libx264',
             audio_codec='aac',
-            audio_bitrate='192k',
-            temp_audiofile=str(TEMP_DIR / "temp_audio.m4a"),
+            audio_bitrate='128k',
+            temp_audiofile=str(TEMP_DIR / f"audio_{user_id}.m4a"),
             remove_temp=True,
-            threads=2,  # Ограничиваем потоки для 2 ГБ ОЗУ
-            ffmpeg_params=[
-                '-pix_fmt', 'yuv420p',  # Совместимость с соцсетями
-                '-movflags', '+faststart'  # Быстрый старт для онлайн
-            ]
+            threads=FFMPEG_THREADS,
+            ffmpeg_params=ffmpeg_params,
+            verbose=False,
+            logger=None  # Отключаем логирование moviepy
         )
         
-        # Закрываем клипы для освобождения памяти
+        # 6. Очистка памяти
         video.close()
         cropped.close()
         scaled.close()
         background.close()
         final_video.close()
         
-        # Проверяем размер результата
-        if output_path.stat().st_size > MAX_VIDEO_SIZE:
-            logger.warning(f"Результат слишком большой: {output_path.stat().st_size}")
+        # Принудительный сбор мусора
+        gc.collect()
+        
+        # 7. Проверка результата
+        if not output_path.exists():
+            logger.error("Выходной файл не создан")
+            return None
+        
+        file_size = output_path.stat().st_size
+        if file_size > MAX_VIDEO_SIZE:
+            logger.warning(f"Файл слишком большой: {file_size/1024/1024:.1f} MB")
             output_path.unlink()
             return None
         
-        logger.info(f"✅ Конвертация завершена: {output_path.name}")
+        logger.info(f"✅ Готово: {output_path.name} ({file_size/1024/1024:.1f} MB)")
         return output_path
         
     except Exception as e:
-        logger.error(f"❌ Ошибка конвертации: {e}")
-        # Закрываем видео если открыто
+        logger.error(f"❌ Ошибка: {e}")
+        # Закрываем все клипы при ошибке
         try:
             video.close()
         except:
             pass
-        
-        # Удаляем временные файлы при ошибке
-        if output_path.exists():
-            output_path.unlink()
-        
         return None
 
 # --- КОМАНДЫ БОТА ---
 
-@dp.message(Command("start", "help"))
+@dp.message(Command("start"))
 async def cmd_start(message: Message):
-    """Команда /start"""
-    welcome_text = """
-🎬 <b>Video Circle to Reels Converter</b>
+    start_text = """
+🎬 <b>Video Circle → Reels Converter</b>
+<i>Оптимизирован для Timeweb сервера</i>
 
-<u>Я превращаю видео-кружочки Telegram в вертикальные видео формата Reels/TikTok!</u>
+<b>🚀 Возможности:</b>
+• Конвертация кружков в вертикальное видео
+• Черный фон (без белых краев!)
+• Формат 720×1280 (оптимально для Reels)
+• Быстрая обработка на Timeweb сервере
 
-<b>✨ Что я делаю:</b>
-• Беру ваш видео-кружок из Telegram
-• Увеличиваю его с сохранением качества
-• Добавляю черный фон
-• Создаю вертикальное видео 1080×1920
-• Сохраняю высокое качество и звук
+<b>📊 Ограничения сервера:</b>
+• Макс. длительность: 45 секунд
+• Макс. размер: 40 MB
+• Обработка по очереди
 
-<b>📱 Как использовать:</b>
-1. Просто отправьте мне <b>видео-кружок</b> (video note)
-2. Я автоматически его обработаю
-3. Получите готовое видео Reels формата!
+<b>📌 Как использовать:</b>
+Просто отправьте мне <b>видео-кружок</b> (видео заметку)
 
-<b>⚡ Особенности:</b>
-• Черный фон (без белого!)
-• Вертикальный формат 9:16
-• Высокое качество видео
-• Сохранение оригинального звука
-• Быстрая обработка
-
-<b>🛠 Команды:</b>
-/start - это сообщение
-/stats - статистика бота
+<b>⚙️ Команды:</b>
+/status - статус сервера
 /cleanup - очистка кэша
 """
-    
-    await message.answer(welcome_text)
+    await message.answer(start_text)
 
-@dp.message(Command("stats"))
-async def cmd_stats(message: Message):
-    """Статистика бота"""
+@dp.message(Command("status"))
+async def cmd_status(message: Message):
+    """Статус сервера Timeweb"""
     process = psutil.Process()
     memory = process.memory_info()
     
-    stats_text = f"""
-📊 <b>Статистика системы:</b>
+    # Использование памяти
+    memory_used = memory.rss / 1024 / 1024
+    memory_percent = (memory_used / MEMORY_LIMIT_MB) * 100
+    
+    # CPU
+    cpu_percent = process.cpu_percent(interval=0.5)
+    
+    # Диск
+    disk = psutil.disk_usage('/')
+    
+    # Температура (если доступно)
+    try:
+        temps = psutil.sensors_temperatures()
+        cpu_temp = temps.get('coretemp', [{}])[0].current if temps else "N/A"
+    except:
+        cpu_temp = "N/A"
+    
+    status_text = f"""
+🖥 <b>Статус Timeweb сервера:</b>
 
 <b>Память (RAM):</b>
-• Используется: {memory.rss / 1024 / 1024:.1f} MB
-• Всего виртуальной: {memory.vms / 1024 / 1024:.1f} MB
+• Используется: {memory_used:.1f} MB / {MEMORY_LIMIT_MB} MB
+• Загрузка: {memory_percent:.1f}%
 
 <b>Процессор (CPU):</b>
-• Загрузка: {process.cpu_percent(interval=0.1):.1f}%
+• Загрузка: {cpu_percent:.1f}%
+• Температура: {cpu_temp}°C
+• Потоки FFmpeg: {FFMPEG_THREADS}
 
-<b>Файлы:</b>
-• Временных файлов: {len(list(TEMP_DIR.glob('*')))}
-• Свободно места: {psutil.disk_usage('/').free / 1024 / 1024 / 1024:.1f} GB
+<b>Дисковое пространство:</b>
+• Свободно: {disk.free / 1024 / 1024 / 1024:.1f} GB
+• Занято: {disk.percent}%
+
+<b>Очередь обработки:</b>
+• Активных задач: {conversion_semaphore._value}
+• Файлов в кэше: {len(list(TEMP_DIR.glob('*')))}
 """
     
-    await message.answer(stats_text)
-
-@dp.message(Command("cleanup"))
-async def cmd_cleanup(message: Message):
-    """Очистка временных файлов"""
-    deleted = await cleanup_temp_files()
-    await message.answer(f"✅ Очищено {deleted} временных файлов")
-
-# --- ОБРАБОТКА ВИДЕО-КРУЖКОВ ---
+    await message.answer(status_text)
 
 @dp.message(F.video_note)
 async def handle_video_note(message: Message):
-    """Обработка видео-кружков"""
-    user_id = message.from_user.id
-    
-    # Отправляем статус
-    status_msg = await message.answer("🔄 <b>Получаю видео-кружок...</b>")
-    
-    try:
-        # Скачиваем видео-кружок
-        video_note = message.video_note
-        file_id = video_note.file_id
+    """Обработка видео-кружков с ограничением"""
+    async with conversion_semaphore:
+        user_id = message.from_user.id
         
-        # Получаем информацию о файле
-        file = await bot.get_file(file_id)
-        file_path = file.file_path
+        # Проверяем память перед началом
+        if not check_memory_usage():
+            await message.answer("⚠️ <b>Сервер перегружен</b>\n"
+                                "Попробуйте через несколько минут")
+            return
         
-        # Создаем имя для временного файла
-        input_path = TEMP_DIR / f"input_{user_id}_{file_id}.mp4"
+        status_msg = await message.answer("🔄 <b>Начинаю обработку...</b>")
         
-        # Скачиваем файл
-        await bot.download_file(file_path, destination=input_path)
-        
-        await status_msg.edit_text("🎬 <b>Конвертирую в Reels формат...</b>\n<i>Это займет несколько секунд</i>")
-        
-        # Конвертируем
-        output_path = await asyncio.get_event_loop().run_in_executor(
-            None, create_reels_video, input_path, user_id
-        )
-        
-        if output_path and output_path.exists():
-            # Читаем результат
-            with open(output_path, 'rb') as video_file:
-                video_data = video_file.read()
+        try:
+            # Скачивание
+            file_id = message.video_note.file_id
+            file = await bot.get_file(file_id)
+            input_path = TEMP_DIR / f"input_{user_id}_{file_id}.mp4"
             
-            # Отправляем результат
-            await status_msg.edit_text("📤 <b>Отправляю результат...</b>")
+            await bot.download_file(file.file_path, destination=input_path)
             
-            await message.answer_video(
-                video=BufferedInputFile(video_data, filename="reels_video.mp4"),
-                caption="✅ <b>Готово! Ваше видео в Reels формате</b>\n\n"
-                       f"Размер: {output_path.stat().st_size / 1024 / 1024:.1f} MB\n"
-                       f"Формат: 1080×1920 (вертикальный)\n"
-                       f"Качество: высокое",
-                supports_streaming=True
+            await status_msg.edit_text("🎬 <b>Конвертация в Reels формат...</b>\n"
+                                      "<i>Это займет 15-30 секунд</i>")
+            
+            # Конвертация в отдельном потоке
+            output_path = await asyncio.get_event_loop().run_in_executor(
+                None, create_reels_video_timeweb, input_path, user_id
             )
             
-            # Удаляем временные файлы
-            input_path.unlink(missing_ok=True)
-            output_path.unlink(missing_ok=True)
-            await status_msg.delete()
-            
-        else:
-            await status_msg.edit_text("❌ <b>Не удалось конвертировать видео</b>\n\n"
-                                      "Возможные причины:\n"
-                                      "• Видео слишком длинное\n"
-                                      "• Ошибка обработки\n"
-                                      "• Попробуйте другое видео")
-            
-    except Exception as e:
-        logger.error(f"Ошибка обработки видео-кружка: {e}")
-        await status_msg.edit_text("❌ <b>Произошла ошибка при обработке</b>\n\n"
-                                  "Попробуйте еще раз или отправьте другое видео")
-        # Очищаем временные файлы при ошибке
-        await cleanup_temp_files()
+            if output_path and output_path.exists():
+                # Чтение и отправка результата
+                with open(output_path, 'rb') as f:
+                    video_data = f.read()
+                
+                file_size_mb = output_path.stat().st_size / 1024 / 1024
+                
+                await message.answer_video(
+                    video=BufferedInputFile(video_data, "reels.mp4"),
+                    caption=f"✅ <b>Готово! Reels видео</b>\n"
+                           f"Размер: {file_size_mb:.1f} MB\n"
+                           f"Формат: {OUTPUT_WIDTH}×{OUTPUT_HEIGHT}\n"
+                           f"Качество: хорошее",
+                    supports_streaming=True
+                )
+                
+                await status_msg.delete()
+                
+                # Очистка
+                input_path.unlink(missing_ok=True)
+                output_path.unlink(missing_ok=True)
+                gc.collect()
+                
+            else:
+                await status_msg.edit_text("❌ <b>Не удалось обработать видео</b>\n"
+                                          "Возможные причины:\n"
+                                          "• Слишком длинное видео\n"
+                                          "• Недостаточно памяти\n"
+                                          "• Попробуйте другое видео")
+                
+        except Exception as e:
+            logger.error(f"Ошибка: {e}")
+            await status_msg.edit_text("❌ <b>Ошибка обработки</b>\n"
+                                      "Попробуйте еще раз")
+        finally:
+            # Всегда чистим временные файлы
+            await cleanup_temp_files()
 
-# --- ОБРАБОТКА ОБЫЧНЫХ ВИДЕО ---
-
-@dp.message(F.video)
-async def handle_video(message: Message):
-    """Информация для обычных видео"""
-    await message.answer("📹 <b>Я работаю только с видео-кружками!</b>\n\n"
-                        "Чтобы получить Reels видео:\n"
-                        "1. Нажмите на <b>скрепку</b> в поле ввода\n"
-                        "2. Выберите <b>«Кружочек»</b> (видео заметка)\n"
-                        "3. Запишите или выберите видео\n"
-                        "4. Отправьте мне!\n\n"
-                        "Я преобразую его в вертикальное видео с черным фоном.")
-
-# --- ЗАПУСК БОТА ---
-
-async def on_startup():
-    """Действия при запуске"""
-    logger.info("=" * 50)
-    logger.info("Video Circle Converter Bot запущен!")
-    logger.info(f"ID бота: {BOT_TOKEN.split(':')[0]}")
-    logger.info(f"Временная директория: {TEMP_DIR.absolute()}")
-    logger.info("Очищаю старые временные файлы...")
-    
-    deleted = await cleanup_temp_files()
-    logger.info(f"Очищено файлов: {deleted}")
-    
-    # Проверяем наличие FFmpeg
-    try:
-        result = subprocess.run(['ffmpeg', '-version'], 
-                              capture_output=True, text=True)
-        if result.returncode == 0:
-            logger.info("✅ FFmpeg найден")
-        else:
-            logger.error("❌ FFmpeg не найден! Установите: sudo apt install ffmpeg")
-    except:
-        logger.error("❌ FFmpeg не найден! Установите: sudo apt install ffmpeg")
-    
-    logger.info("=" * 50)
-
-async def on_shutdown():
-    """Действия при остановке"""
-    logger.info("Останавливаю бота...")
-    deleted = await cleanup_temp_files()
-    logger.info(f"Очищено файлов при остановке: {deleted}")
-    logger.info("Бот остановлен")
+# --- ЗАПУСК ---
 
 async def main():
-    """Главная функция"""
-    await on_startup()
+    """Главная функция с Timeweb оптимизациями"""
+    logger.info("=" * 50)
+    logger.info(f"Video Bot запущен на Timeweb")
+    logger.info(f"Память: {MEMORY_LIMIT_MB} MB доступно")
+    logger.info(f"CPU: {FFMPEG_THREADS} потока")
+    logger.info(f"Temp dir: {TEMP_DIR}")
+    logger.info("=" * 50)
     
+    # Проверка FFmpeg
     try:
-        await dp.start_polling(bot, on_startup=on_startup, on_shutdown=on_shutdown)
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен вручную")
-    except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-    finally:
-        await on_shutdown()
+        subprocess.run(['ffmpeg', '-version'], 
+                      capture_output=True, check=True)
+        logger.info("✅ FFmpeg установлен")
+    except:
+        logger.error("❌ FFmpeg не найден!")
+        sys.exit(1)
+    
+    # Очистка при старте
+    await cleanup_temp_files()
+    
+    # Запуск бота
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    # Устанавливаем оптимизации для asyncio
-    if sys.platform == 'linux':
-        import uvloop
-        uvloop.install()
+    # Оптимизации для Timeweb
+    if sys.platform == "linux":
+        # Используем uvloop для ускорения asyncio
+        try:
+            import uvloop
+            uvloop.install()
+            logger.info("✅ Используется uvloop")
+        except:
+            pass
+        
+        # Настройка лимитов
+        try:
+            # Устанавливаем лимит на количество открытых файлов
+            resource.setrlimit(resource.RLIMIT_NOFILE, (4096, 8192))
+        except:
+            pass
+    
+    # Запуск
+    asyncio.run(main())
     
     # Запускаем бота
+
     asyncio.run(main())

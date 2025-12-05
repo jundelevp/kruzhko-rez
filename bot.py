@@ -14,13 +14,12 @@ from pathlib import Path
 from typing import Optional
 import subprocess
 
-from aiogram import Bot, Dispatcher, F, types, Router
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message, BufferedInputFile
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 import moviepy.editor as mp
-from moviepy.video.fx.all import resize
+from moviepy.video.VideoClip import ColorClip
 import psutil
 
 # --- TIMEWEB КОНФИГУРАЦИЯ ---
@@ -34,7 +33,6 @@ MAX_CACHE_SIZE_MB = 100  # Макс. размер кэша
 
 # 2. CPU (3.3 ГГц, 1-2 ядра на Timeweb)
 FFMPEG_THREADS = 2  # Оптимально для 2 ядер
-CPU_LIMIT = 1.5  # Ограничение использования CPU (ядра)
 
 # 3. КАЧЕСТВО ВЫХОДНОГО ВИДЕО (оптимизировано)
 OUTPUT_WIDTH = 720   # HD (быстрее чем 1080)
@@ -164,7 +162,6 @@ def create_reels_video_timeweb(input_path: Path, user_id: int) -> Optional[Path]
             scale_factor = 2  # Ограничиваем
         
         # Создаем черный фон
-        from moviepy.video.VideoClip import ColorClip
         background = ColorClip(
             size=(OUTPUT_WIDTH, OUTPUT_HEIGHT),
             color=(0, 0, 0),
@@ -172,11 +169,15 @@ def create_reels_video_timeweb(input_path: Path, user_id: int) -> Optional[Path]
         ).set_fps(OUTPUT_FPS)
         
         # Подготовка круга
+        x_center = original_size[0] // 2
+        y_center = original_size[1] // 2
+        half_size = circle_size // 2
+        
         cropped = video.crop(
-            x_center=original_size[0]//2,
-            y_center=original_size[1]//2,
-            width=circle_size,
-            height=circle_size
+            x1=x_center - half_size,
+            y1=y_center - half_size,
+            x2=x_center + half_size,
+            y2=y_center + half_size
         )
         
         scaled = cropped.resize(scale_factor)
@@ -257,22 +258,23 @@ def create_reels_video_timeweb(input_path: Path, user_id: int) -> Optional[Path]
 
 # --- КОМАНДЫ БОТА ---
 
-@dp.message(Command("start"))
+@dp.message(Command("start", "help"))
 async def cmd_start(message: Message):
     start_text = """
 🎬 <b>Video Circle → Reels Converter</b>
 <i>Оптимизирован для Timeweb сервера</i>
 
-<b>🚀 Возможности:</b>
-• Конвертация кружков в вертикальное видео
-• Черный фон (без белых краев!)
-• Формат 720×1280 (оптимально для Reels)
-• Быстрая обработка на Timeweb сервере
+<b>🚀 Что я делаю:</b>
+• Беру ваш видео-кружок (видео-заметку)
+• Увеличиваю его с сохранением качества
+• Добавляю стильный черный фон
+• Создаю вертикальное видео 720×1280
+• Сохраняю оригинальный звук
 
 <b>📊 Ограничения сервера:</b>
 • Макс. длительность: 45 секунд
 • Макс. размер: 40 MB
-• Обработка по очереди
+• Обработка по очереди (по одному)
 
 <b>📌 Как использовать:</b>
 Просто отправьте мне <b>видео-кружок</b> (видео заметку)
@@ -299,13 +301,6 @@ async def cmd_status(message: Message):
     # Диск
     disk = psutil.disk_usage('/')
     
-    # Температура (если доступно)
-    try:
-        temps = psutil.sensors_temperatures()
-        cpu_temp = temps.get('coretemp', [{}])[0].current if temps else "N/A"
-    except:
-        cpu_temp = "N/A"
-    
     status_text = f"""
 🖥 <b>Статус Timeweb сервера:</b>
 
@@ -315,7 +310,6 @@ async def cmd_status(message: Message):
 
 <b>Процессор (CPU):</b>
 • Загрузка: {cpu_percent:.1f}%
-• Температура: {cpu_temp}°C
 • Потоки FFmpeg: {FFMPEG_THREADS}
 
 <b>Дисковое пространство:</b>
@@ -328,6 +322,14 @@ async def cmd_status(message: Message):
 """
     
     await message.answer(status_text)
+
+@dp.message(Command("cleanup"))
+async def cmd_cleanup(message: Message):
+    """Очистка кэша"""
+    deleted = await cleanup_temp_files()
+    await message.answer(f"✅ Очищено {deleted} временных файлов")
+
+# --- ОБРАБОТКА ВИДЕО-КРУЖКОВ ---
 
 @dp.message(F.video_note)
 async def handle_video_note(message: Message):
@@ -367,12 +369,14 @@ async def handle_video_note(message: Message):
                 file_size_mb = output_path.stat().st_size / 1024 / 1024
                 
                 await message.answer_video(
-                    video=BufferedInputFile(video_data, "reels.mp4"),
-                    caption=f"✅ <b>Готово! Reels видео</b>\n"
-                           f"Размер: {file_size_mb:.1f} MB\n"
-                           f"Формат: {OUTPUT_WIDTH}×{OUTPUT_HEIGHT}\n"
-                           f"Качество: хорошее",
-                    supports_streaming=True
+                    video=BufferedInputFile(video_data, "reels_video.mp4"),
+                    caption=f"✅ <b>Готово! Reels видео</b>\n\n"
+                           f"📏 Размер: {file_size_mb:.1f} MB\n"
+                           f"🎞 Формат: {OUTPUT_WIDTH}×{OUTPUT_HEIGHT}\n"
+                           f"⭐ Качество: оптимизировано для соцсетей",
+                    supports_streaming=True,
+                    width=OUTPUT_WIDTH,
+                    height=OUTPUT_HEIGHT
                 )
                 
                 await status_msg.delete()
@@ -383,45 +387,79 @@ async def handle_video_note(message: Message):
                 gc.collect()
                 
             else:
-                await status_msg.edit_text("❌ <b>Не удалось обработать видео</b>\n"
+                await status_msg.edit_text("❌ <b>Не удалось обработать видео</b>\n\n"
                                           "Возможные причины:\n"
-                                          "• Слишком длинное видео\n"
-                                          "• Недостаточно памяти\n"
+                                          "• Видео слишком длинное (макс. 45 сек)\n"
+                                          "• Недостаточно памяти на сервере\n"
                                           "• Попробуйте другое видео")
                 
         except Exception as e:
-            logger.error(f"Ошибка: {e}")
+            logger.error(f"Ошибка обработки: {e}")
             await status_msg.edit_text("❌ <b>Ошибка обработки</b>\n"
-                                      "Попробуйте еще раз")
+                                      "Попробуйте еще раз или другое видео")
         finally:
             # Всегда чистим временные файлы
             await cleanup_temp_files()
 
-# --- ЗАПУСК ---
+# --- ОБРАБОТКА ОБЫЧНЫХ ВИДЕО ---
 
-async def main():
-    """Главная функция с Timeweb оптимизациями"""
+@dp.message(F.video)
+async def handle_video(message: Message):
+    """Подсказка для обычных видео"""
+    await message.answer("📹 <b>Я работаю только с видео-кружками!</b>\n\n"
+                        "Чтобы получить Reels видео:\n"
+                        "1. Нажмите на <b>скрепку</b> 📎\n"
+                        "2. Выберите <b>«Кружочек»</b> 🎬\n"
+                        "3. Запишите или выберите видео\n"
+                        "4. Отправьте мне!\n\n"
+                        "Я преобразую его в вертикальное видео с черным фоном.")
+
+# --- ЗАПУСК БОТА ---
+
+async def on_startup():
+    """Действия при запуске"""
     logger.info("=" * 50)
-    logger.info(f"Video Bot запущен на Timeweb")
-    logger.info(f"Память: {MEMORY_LIMIT_MB} MB доступно")
-    logger.info(f"CPU: {FFMPEG_THREADS} потока")
-    logger.info(f"Temp dir: {TEMP_DIR}")
-    logger.info("=" * 50)
+    logger.info("Video Circle Converter Bot запущен!")
+    logger.info(f"ID бота: {BOT_TOKEN.split(':')[0]}")
+    logger.info(f"Временная директория: {TEMP_DIR}")
+    logger.info(f"Лимит памяти: {MEMORY_LIMIT_MB} MB")
+    logger.info(f"Потоки FFmpeg: {FFMPEG_THREADS}")
     
-    # Проверка FFmpeg
+    # Проверяем наличие FFmpeg
     try:
-        subprocess.run(['ffmpeg', '-version'], 
-                      capture_output=True, check=True)
-        logger.info("✅ FFmpeg установлен")
+        result = subprocess.run(['ffmpeg', '-version'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            logger.info("✅ FFmpeg найден")
+        else:
+            logger.error("❌ FFmpeg не найден!")
     except:
         logger.error("❌ FFmpeg не найден!")
-        sys.exit(1)
     
-    # Очистка при старте
-    await cleanup_temp_files()
+    # Очистка старых файлов
+    deleted = await cleanup_temp_files()
+    logger.info(f"Очищено старых файлов: {deleted}")
+    logger.info("=" * 50)
+
+async def on_shutdown():
+    """Действия при остановке"""
+    logger.info("Останавливаю бота...")
+    deleted = await cleanup_temp_files()
+    logger.info(f"Очищено файлов: {deleted}")
+    logger.info("Бот остановлен")
+
+async def main():
+    """Главная функция"""
+    await on_startup()
     
-    # Запуск бота
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен вручную")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")
+    finally:
+        await on_shutdown()
 
 if __name__ == "__main__":
     # Оптимизации для Timeweb
@@ -433,17 +471,8 @@ if __name__ == "__main__":
             logger.info("✅ Используется uvloop")
         except:
             pass
-        
-        # Настройка лимитов
-        try:
-            # Устанавливаем лимит на количество открытых файлов
-            resource.setrlimit(resource.RLIMIT_NOFILE, (4096, 8192))
-        except:
-            pass
     
-    # Запуск
+    # Запуск бота
     asyncio.run(main())
-    
-    # Запускаем бота
+    asyncio.run(main())
 
-    asyncio.run(main())

@@ -1,19 +1,24 @@
 FROM python:3.10-slim
 
-# Меняем зеркало для ускорения загрузки
+# Timeweb: меняем зеркало
 RUN sed -i 's|deb.debian.org|mirror.yandex.ru|g' /etc/apt/sources.list && \
     sed -i 's|security.debian.org|mirror.yandex.ru/debian-security|g' /etc/apt/sources.list
 
-# Устанавливаем FFmpeg и системные зависимости
+# Timeweb: минимальный набор зависимостей
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
     libsm6 \
     libxext6 \
-    libxrender-dev \
     libgl1-mesa-glx \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Timeweb: настройка Python
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONFAULTHANDLER=1 \
+    UV_THREADPOOL_SIZE=2
 
 WORKDIR /app
 
@@ -25,8 +30,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Копируем код
 COPY . .
 
-# Создаем директорию для временных файлов
-RUN mkdir -p /app/video_temp
+# Создаем временную директорию
+RUN mkdir -p /tmp/video_bot && chmod 777 /tmp/video_bot
 
-# Запуск бота
-CMD ["python", "main.py"]
+# Timeweb: ограничение ресурсов
+CMD ["python", "-OO", "bot.py"]

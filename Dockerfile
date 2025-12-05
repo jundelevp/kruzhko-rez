@@ -1,22 +1,21 @@
 FROM python:3.10-slim
 
-# Устанавливаем системные зависимости включая FFmpeg
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# Меняем зеркало репозитория для ускорения загрузки пакетов
+RUN sed -i 's|deb.debian.org|mirror.yandex.ru|g' /etc/apt/sources.list && \
+    sed -i 's|security.debian.org|mirror.yandex.ru/debian-security|g' /etc/apt/sources.list
 
-# Создаем и переходим в рабочую директорию
-WORKDIR /app
+# Устанавливаем ffmpeg с оптимизацией для уменьшения размера образа
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# Копируем requirements и устанавливаем Python зависимости
+# Копируем зависимости Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем остальные файлы
+# Копируем исходный код приложения
 COPY . .
 
-# Создаем папку для данных
-RUN mkdir -p /app/data
-
-# Запускаем приложение
+# Команда для запуска приложения
 CMD ["python", "bot.py"]
